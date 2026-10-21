@@ -494,10 +494,3 @@ with col_mapa:
             f'style="background-color:{COLORES_TIPO.get(t, "#808080")}"></span>{t}</span>'
             for t in tipos_presentes
         )
-        st.markdown(leyenda_html, unsafe_allow_html=True)
-
-st.markdown(
-    '<div class="conelsur-footer">Cuerpo General de Bomberos Voluntarios del Perú — '
-    'datos de referencia · CONELSUR — Centro de Control de Operaciones de Transmisión</div>',
-    unsafe_allow_html=True,
-)
