@@ -316,7 +316,6 @@ if logo_b64:
     )
 else:
     st.title("⚡ Centro de Control: Localizador de Fallas Georreferenciado")
-    st.markdown("Herramienta analítica para la optimización de tiempos de respuesta post-falla.")
     st.divider()
 
 # =========================================================
