@@ -632,6 +632,7 @@ with col_mapa:
         {
             "path": grupo_linea[["Longitud", "Latitud"]].values.tolist(),
             "nombre": f"Línea: {nombre_linea}",
+            "info": "",
         }
         for nombre_linea, grupo_linea in datos_lineas.items()
         if nombre_linea != linea_seleccionada
@@ -642,8 +643,8 @@ with col_mapa:
             data=datos_otras_lineas,
             get_path="path",
             get_color=hex_a_rgb(COLOR_LINEA_TENUE, 180),
-            get_width=250,
-            width_min_pixels=1.5,
+            get_width=1.5,
+            width_units="pixels",
             pickable=True,
         )
     )
@@ -655,6 +656,7 @@ with col_mapa:
         {
             "path": df_linea[["Longitud", "Latitud"]].values.tolist(),
             "nombre": f"Línea: {linea_seleccionada}",
+            "info": "",
         }
     ]
     capas_pydeck.append(
@@ -663,8 +665,8 @@ with col_mapa:
             data=dato_linea_sel,
             get_path="path",
             get_color=hex_a_rgb(AZUL_CONELSUR),
-            get_width=450,
-            width_min_pixels=3.5,
+            get_width=3,
+            width_units="pixels",
             pickable=True,
         )
     )
@@ -677,19 +679,25 @@ with col_mapa:
         for _, r in df_rest_linea.iterrows():
             color_rgb = hex_a_rgb(COLORES_TIPO.get(r["Tipo"], "#808080"), 200)
             info = (
-                f"{r['Tipo']} — {r['Zona_Geografica']}\n"
-                f"{r['Texto_Original']}\n"
-                f"D. horizontal: {r['Distancia_Horizontal_m']:.0f} m · Fuente: {r['Fuente']}"
+                f"<br/>{r['Zona_Geografica']}"
+                f"<br/>{r['Texto_Original']}"
+                f"<br/>D. horizontal: {r['Distancia_Horizontal_m']:.0f} m · Fuente: {r['Fuente']}"
             )
             if r["Acumulado_Inicio_m"] == r["Acumulado_Fin_m"]:
                 datos_rest_punto.append(
-                    {"position": [r["lon_ini"], r["lat_ini"]], "color": color_rgb, "info": info}
+                    {
+                        "position": [r["lon_ini"], r["lat_ini"]],
+                        "color": color_rgb,
+                        "nombre": r["Tipo"],
+                        "info": info,
+                    }
                 )
             else:
                 datos_rest_tramo.append(
                     {
                         "path": [[r["lon_ini"], r["lat_ini"]], [r["lon_fin"], r["lat_fin"]]],
                         "color": color_rgb,
+                        "nombre": r["Tipo"],
                         "info": info,
                     }
                 )
@@ -700,8 +708,8 @@ with col_mapa:
                     data=datos_rest_tramo,
                     get_path="path",
                     get_color="color",
-                    get_width=600,
-                    width_min_pixels=4,
+                    get_width=4,
+                    width_units="pixels",
                     pickable=True,
                 )
             )
@@ -730,7 +738,12 @@ with col_mapa:
             "anchorX": 14,
         }
         datos_subestaciones = [
-            {"position": [lon_se, lat_se], "nombre": nombre_se, "icono": icono_subestacion}
+            {
+                "position": [lon_se, lat_se],
+                "nombre": nombre_se,
+                "icono": icono_subestacion,
+                "info": "",
+            }
             for nombre_se, (lat_se, lon_se) in subestaciones.items()
             if not (pd.isna(lat_se) or pd.isna(lon_se))
         ]
@@ -769,6 +782,7 @@ with col_mapa:
         {
             "position": [lon_falla, lat_falla],
             "nombre": f"⚡ Falla estimada — Km {distancia_falla_km:.2f}",
+            "info": "",
         }
     ]
     capas_pydeck.append(
