@@ -670,17 +670,25 @@ with col_mapa:
 
     if mostrar_subestaciones and subestaciones:
         capa_subestaciones = folium.FeatureGroup(name="Subestaciones")
-        icono_cuadrado_css = "width:14px; height:14px; background-color:#111111; border:1px solid #FFFFFF;"
         for nombre_se, (lat_se, lon_se) in subestaciones.items():
             if pd.isna(lat_se) or pd.isna(lon_se):
                 continue
+            etiqueta_html = (
+                '<div style="display:flex; align-items:center; gap:4px; white-space:nowrap;">'
+                '<div style="width:13px; height:13px; background-color:#111111; '
+                'border:1px solid #FFFFFF; flex-shrink:0;"></div>'
+                '<span style="font-family:Inter,Arial,sans-serif; font-size:11px; font-weight:600; '
+                'color:#111111; background-color:rgba(255,255,255,0.85); padding:1px 5px; '
+                f'border-radius:3px;">{nombre_se}</span>'
+                "</div>"
+            )
             folium.Marker(
                 location=[lat_se, lon_se],
-                tooltip=(
-                    f'<div style="font-family:Inter,Arial,sans-serif; font-size:12.5px;">'
-                    f'<b>Subestación:</b> {nombre_se}</div>'
+                icon=folium.DivIcon(
+                    html=etiqueta_html,
+                    icon_size=(220, 20),
+                    icon_anchor=(6, 10),
                 ),
-                icon=folium.DivIcon(html=f'<div style="{icono_cuadrado_css}"></div>'),
             ).add_to(capa_subestaciones)
         capa_subestaciones.add_to(m)
 
