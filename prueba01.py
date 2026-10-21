@@ -1,10 +1,12 @@
+import re
+import base64
+from pathlib import Path
+
 import streamlit as st
 import folium
 from streamlit_folium import st_folium
 import pandas as pd
 import numpy as np
-import base64
-from pathlib import Path
 
 # =========================================================
 # 0. COLORES DE MARCA CONELSUR
@@ -13,6 +15,20 @@ AZUL_CONELSUR = "#0B3088"
 VERDE_CONELSUR = "#00A651"
 GRIS_CLARO = "#F5F7FA"
 
+COLORES_TIPO = {
+    "Poblado": "#FF8C00",
+    "Carretera": "#696969",
+    "Rio": "#1E90FF",
+    "Cultivo": "#6B8E23",
+    "Pastizal": "#9ACD32",
+    "Eriazo": "#A0522D",
+    "Bosque": "#2E7D32",
+    "Mineria": "#222222",
+    "Parque": "#228B22",
+    "Telecom": "#8A2BE2",
+    "Otro": "#808080",
+}
+
 st.set_page_config(
     layout="wide",
     page_title="Sistema de Localización de Fallas - SEIN",
@@ -20,17 +36,17 @@ st.set_page_config(
 )
 
 # =========================================================
-# 1. ESTILOS DE MARCA (CSS)
+# 1. ESTILOS DE MARCA (CSS) — el tema base se fija en
+#    .streamlit/config.toml para que los widgets nativos
+#    (selectbox, number_input, etc.) siempre usen fondo claro
+#    y texto oscuro, sin importar el modo del navegador.
 # =========================================================
 st.markdown(
     f"""
     <style>
-        /* Fondo general */
         .stApp {{
             background-color: {GRIS_CLARO};
         }}
-
-        /* Barra superior con el logo */
         .conelsur-header {{
             background-color: #FFFFFF;
             padding: 16px 24px;
@@ -40,9 +56,7 @@ st.markdown(
             gap: 20px;
             margin-bottom: 24px;
         }}
-        .conelsur-header img {{
-            height: 48px;
-        }}
+        .conelsur-header img {{ height: 48px; }}
         .conelsur-header h1 {{
             color: {AZUL_CONELSUR};
             font-size: 26px;
@@ -53,13 +67,7 @@ st.markdown(
             margin: 0;
             font-size: 14px;
         }}
-
-        /* Encabezados generales */
-        h2, h3 {{
-            color: {AZUL_CONELSUR};
-        }}
-
-        /* Botones y controles */
+        h2, h3 {{ color: {AZUL_CONELSUR}; }}
         .stButton > button, .stDownloadButton > button {{
             background-color: {AZUL_CONELSUR};
             color: white;
@@ -70,20 +78,22 @@ st.markdown(
             background-color: {VERDE_CONELSUR};
             color: white;
         }}
-
-        /* Selectbox / number_input: borde verde al enfocar */
-        div[data-baseweb="select"] > div, .stNumberInput input {{
-            border-color: {AZUL_CONELSUR} !important;
-        }}
-
-        /* Caja de éxito (st.success) en verde de marca */
         div[data-testid="stAlertContainer"] {{
             border-left: 6px solid {VERDE_CONELSUR};
         }}
-
-        /* Sidebar (si se usa en el futuro) */
-        section[data-testid="stSidebar"] {{
-            background-color: {AZUL_CONELSUR};
+        .leyenda-item {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            margin-right: 14px;
+            font-size: 13px;
+            color: #222222;
+        }}
+        .leyenda-swatch {{
+            width: 14px;
+            height: 14px;
+            border-radius: 3px;
+            display: inline-block;
         }}
     </style>
     """,
@@ -95,12 +105,11 @@ st.markdown(
 # =========================================================
 def cargar_logo_base64(ruta: str) -> str:
     try:
-        data = Path(ruta).read_bytes()
-        return base64.b64encode(data).decode()
+        return base64.b64encode(Path(ruta).read_bytes()).decode()
     except FileNotFoundError:
         return ""
 
-logo_b64 = cargar_logo_base64("Conelsur color - alta.jpg")
+logo_b64 = cargar_logo_base64("conelsur_logo.jpg")
 
 if logo_b64:
     st.markdown(
@@ -116,99 +125,126 @@ if logo_b64:
         unsafe_allow_html=True,
     )
 else:
-    # Respaldo si el logo no se encuentra en el repo
-    st.title("Centro de Control: Localizador de Fallas Georreferenciado")
+    st.title("⚡ Centro de Control: Localizador de Fallas Georreferenciado")
     st.markdown("Herramienta analítica para la optimización de tiempos de respuesta post-falla.")
     st.divider()
 
 # =========================================================
-# 3. CARGAR EXCEL REAL
+# 3. FUNCIONES AUXILIARES
 # =========================================================
-ruta_excel = "consolidado_total.xlsx"
+def distancia_m(lat1, lon1, lat2, lon2):
+    R = 6371000
+    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = np.sin(dlat / 2) ** 2 + np.cos(lat1) * np.cos(lat2) * np.sin(dlon / 2) ** 2
+    return 2 * R * np.arcsin(np.sqrt(a))
 
-df = pd.read_excel(ruta_excel)
 
-# limpiar columnas
+def punto_en_distancia(df_linea, dist_m):
+    """Interpola lat/lon a lo largo de una línea dada una distancia acumulada en metros."""
+    df_antes = df_linea[df_linea["Distancia_m"] <= dist_m]
+    df_despues = df_linea[df_linea["Distancia_m"] > dist_m]
+
+    if df_antes.empty:
+        fila = df_linea.iloc[0]
+        return fila["Latitud"], fila["Longitud"]
+    if df_despues.empty:
+        fila = df_linea.iloc[-1]
+        return fila["Latitud"], fila["Longitud"]
+
+    t_ant = df_antes.iloc[-1]
+    t_pos = df_despues.iloc[0]
+
+    if t_pos["Distancia_m"] != t_ant["Distancia_m"]:
+        peso = (dist_m - t_ant["Distancia_m"]) / (t_pos["Distancia_m"] - t_ant["Distancia_m"])
+    else:
+        peso = 0
+
+    lat = t_ant["Latitud"] + peso * (t_pos["Latitud"] - t_ant["Latitud"])
+    lon = t_ant["Longitud"] + peso * (t_pos["Longitud"] - t_ant["Longitud"])
+    return lat, lon
+
+
+def codigo_de_nombre_linea(nombre_linea):
+    m = re.search(r"L-(\d+)", nombre_linea)
+    return int(m.group(1)) if m else None
+
+
+def codigos_en_texto(texto):
+    return set(int(n) for n in re.findall(r"\d+", str(texto)))
+
+
+# =========================================================
+# 4. CARGAR DATOS
+# =========================================================
+df = pd.read_excel("consolidado_total.xlsx")
 df.columns = df.columns.str.strip()
-
-# asegurar tipos
 df["Latitud"] = pd.to_numeric(df["Latitud"], errors="coerce")
 df["Longitud"] = pd.to_numeric(df["Longitud"], errors="coerce")
 df["Torre"] = df["Torre"].astype(str).str.strip()
 
-# =========================================================
-# 4. FUNCIÓN DISTANCIA (REAL)
-# =========================================================
-def distancia(lat1, lon1, lat2, lon2):
-    R = 6371
-    lat1, lon1, lat2, lon2 = map(np.radians, [lat1, lon1, lat2, lon2])
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = np.sin(dlat/2)**2 + np.cos(lat1)*np.cos(lat2)*np.sin(dlon/2)**2
-    return 2 * R * np.arcsin(np.sqrt(a))
-
-# =========================================================
-# 5. CREAR DICCIONARIO DE LÍNEAS + DISTANCIA REAL
-# =========================================================
 datos_lineas = {}
-
 for linea, grupo in df.groupby("Linea"):
     grupo = grupo.reset_index(drop=True)
-
-    # calcular distancia acumulada
-    grupo["Distancia_km"] = 0.0
+    grupo["Distancia_m"] = 0.0
     for i in range(1, len(grupo)):
-        d = distancia(
-            grupo.loc[i-1, "Latitud"], grupo.loc[i-1, "Longitud"],
-            grupo.loc[i, "Latitud"], grupo.loc[i, "Longitud"]
+        d = distancia_m(
+            grupo.loc[i - 1, "Latitud"], grupo.loc[i - 1, "Longitud"],
+            grupo.loc[i, "Latitud"], grupo.loc[i, "Longitud"],
         )
-        grupo.loc[i, "Distancia_km"] = grupo.loc[i-1, "Distancia_km"] + d
-
+        grupo.loc[i, "Distancia_m"] = grupo.loc[i - 1, "Distancia_m"] + d
     datos_lineas[linea] = grupo
 
+# Restricciones (zonas pobladas, cruces de carretera/río, etc.)
+try:
+    df_rest = pd.read_csv("restricciones_conelsur.csv", encoding="utf-8-sig")
+    df_rest["Tipo"] = df_rest["Tipo"].astype(str).str.strip()
+    restricciones_disponibles = True
+except FileNotFoundError:
+    df_rest = pd.DataFrame()
+    restricciones_disponibles = False
+
 # =========================================================
-# 6. INTERFAZ
+# 5. INTERFAZ — CONTROLES
 # =========================================================
 col_control, col_mapa = st.columns([1, 3])
 
 with col_control:
-    st.header("Datos del Evento")
+    st.header("📋 Datos del Evento")
 
     linea_seleccionada = st.selectbox("Seleccione la Línea:", list(datos_lineas.keys()))
     df_linea = datos_lineas[linea_seleccionada]
 
-    distancia_max = df_linea["Distancia_km"].max()
+    distancia_max_km = df_linea["Distancia_m"].max() / 1000
 
-    distancia_falla = st.number_input(
-        f"Distancia de falla (0 a {distancia_max:.2f} km):",
+    distancia_falla_km = st.number_input(
+        f"Distancia de falla (0 a {distancia_max_km:.2f} km):",
         min_value=0.0,
-        max_value=float(distancia_max),
-        value=distancia_max / 2,
-        step=0.1
+        max_value=float(distancia_max_km),
+        value=distancia_max_km / 2,
+        step=0.1,
     )
+    distancia_falla_m = distancia_falla_km * 1000
 
-    # =========================================================
-    # 7. CÁLCULO DE FALLA
-    # =========================================================
-    df_antes = df_linea[df_linea["Distancia_km"] <= distancia_falla]
-    df_despues = df_linea[df_linea["Distancia_km"] > distancia_falla]
+    if restricciones_disponibles:
+        mostrar_restricciones = st.checkbox("Mostrar restricciones en el mapa", value=True)
+    else:
+        mostrar_restricciones = False
+        st.warning("No se encontró restricciones_conelsur.csv en el repositorio.")
 
+    # ---------------------------------------------------
+    # Ubicación de la falla
+    # ---------------------------------------------------
+    lat_falla, lon_falla = punto_en_distancia(df_linea, distancia_falla_m)
+
+    df_antes = df_linea[df_linea["Distancia_m"] <= distancia_falla_m]
+    df_despues = df_linea[df_linea["Distancia_m"] > distancia_falla_m]
     if df_despues.empty:
-        t_anterior = df_antes.iloc[-2]
-        t_posterior = df_antes.iloc[-1]
+        t_anterior, t_posterior = df_antes.iloc[-2], df_antes.iloc[-1]
     else:
-        t_anterior = df_antes.iloc[-1]
+        t_anterior = df_antes.iloc[-1] if not df_antes.empty else df_linea.iloc[0]
         t_posterior = df_despues.iloc[0]
-
-    if t_posterior["Distancia_km"] != t_anterior["Distancia_km"]:
-        peso = (distancia_falla - t_anterior["Distancia_km"]) / (
-            t_posterior["Distancia_km"] - t_anterior["Distancia_km"]
-        )
-    else:
-        peso = 0
-
-    lat_falla = t_anterior["Latitud"] + peso * (t_posterior["Latitud"] - t_anterior["Latitud"])
-    lon_falla = t_anterior["Longitud"] + peso * (t_posterior["Longitud"] - t_anterior["Longitud"])
 
     st.success("📍 Ubicación estimada")
     st.write(f"Coordenadas: {lat_falla:.5f}, {lon_falla:.5f}")
@@ -218,17 +254,56 @@ with col_control:
     else:
         st.write(f"Entre: {t_anterior['Torre']} y {t_posterior['Torre']}")
 
+    # ---------------------------------------------------
+    # Restricciones de la línea seleccionada
+    # ---------------------------------------------------
+    df_rest_linea = pd.DataFrame()
+    if restricciones_disponibles:
+        codigo_linea_actual = codigo_de_nombre_linea(linea_seleccionada)
+        mask = df_rest["Codigo_Linea"].apply(lambda s: codigo_linea_actual in codigos_en_texto(s))
+        df_rest_linea = df_rest[mask].copy()
+
+        if not df_rest_linea.empty:
+            puntos_ini = df_rest_linea["Acumulado_Inicio_m"].apply(lambda d: punto_en_distancia(df_linea, d))
+            puntos_fin = df_rest_linea["Acumulado_Fin_m"].apply(lambda d: punto_en_distancia(df_linea, d))
+            df_rest_linea["lat_ini"] = puntos_ini.apply(lambda p: p[0])
+            df_rest_linea["lon_ini"] = puntos_ini.apply(lambda p: p[1])
+            df_rest_linea["lat_fin"] = puntos_fin.apply(lambda p: p[0])
+            df_rest_linea["lon_fin"] = puntos_fin.apply(lambda p: p[1])
+
+        # --- Chequeo automático: ¿el punto de falla cae en una restricción? ---
+        st.subheader("🔎 Verificación en el punto de falla")
+        margen_m = 25  # tolerancia de interpolación
+        en_rango = df_rest_linea[
+            (df_rest_linea["Acumulado_Inicio_m"] - margen_m <= distancia_falla_m)
+            & (df_rest_linea["Acumulado_Fin_m"] + margen_m >= distancia_falla_m)
+        ]
+
+        if en_rango.empty:
+            st.info("No se registran restricciones conocidas en este punto.")
+        else:
+            for _, r in en_rango.iterrows():
+                detalle = (
+                    f"**{r['Tipo']}** — {r['Zona_Geografica']}  \n"
+                    f"{r['Texto_Original']}  \n"
+                    f"Distancia horizontal al eje: {r['Distancia_Horizontal_m']:.0f} m · Fuente: {r['Fuente']}"
+                )
+                if r["Tipo"] == "Poblado" and r["Distancia_Horizontal_m"] < 100:
+                    st.error(f"⚠️ Zona poblada cercana\n\n{detalle}")
+                elif r["Fuente"] == "Cruce":
+                    st.warning(f"🚧 Cruce con {r['Tipo'].lower()}\n\n{detalle}")
+                else:
+                    st.warning(detalle)
+
 # =========================================================
-# 8. MAPA
+# 6. MAPA
 # =========================================================
 with col_mapa:
-    m = folium.Map(location=[lat_falla, lon_falla], zoom_start=11)
+    m = folium.Map(location=[lat_falla, lon_falla], zoom_start=11, tiles="CartoDB positron")
 
-    # línea (azul de marca)
     coord_linea = list(zip(df_linea["Latitud"], df_linea["Longitud"]))
     folium.PolyLine(coord_linea, color=AZUL_CONELSUR, weight=4).add_to(m)
 
-    # torres
     for _, fila in df_linea.iterrows():
         folium.CircleMarker(
             location=[fila["Latitud"], fila["Longitud"]],
@@ -236,14 +311,53 @@ with col_mapa:
             color=AZUL_CONELSUR,
             fill=True,
             fill_color="white",
-            popup=f"{fila['Torre']} (Km {fila['Distancia_km']:.2f})"
+            popup=f"{fila['Torre']} (Km {fila['Distancia_m']/1000:.2f})",
         ).add_to(m)
 
-    # falla (verde de marca)
+    if mostrar_restricciones and not df_rest_linea.empty:
+        capa_restricciones = folium.FeatureGroup(name="Restricciones")
+        for _, r in df_rest_linea.iterrows():
+            color = COLORES_TIPO.get(r["Tipo"], "#808080")
+            popup_html = (
+                f"<b>{r['Tipo']}</b> ({r['Fuente']})<br>"
+                f"{r['Zona_Geografica']}<br>"
+                f"{r['Texto_Original']}<br>"
+                f"D. horizontal: {r['Distancia_Horizontal_m']:.0f} m"
+            )
+            if r["Acumulado_Inicio_m"] == r["Acumulado_Fin_m"]:
+                folium.CircleMarker(
+                    location=[r["lat_ini"], r["lon_ini"]],
+                    radius=6,
+                    color=color,
+                    fill=True,
+                    fill_color=color,
+                    fill_opacity=0.8,
+                    popup=popup_html,
+                ).add_to(capa_restricciones)
+            else:
+                folium.PolyLine(
+                    [[r["lat_ini"], r["lon_ini"]], [r["lat_fin"], r["lon_fin"]]],
+                    color=color,
+                    weight=6,
+                    opacity=0.65,
+                    popup=popup_html,
+                ).add_to(capa_restricciones)
+        capa_restricciones.add_to(m)
+        folium.LayerControl(collapsed=False).add_to(m)
+
     folium.Marker(
         location=[lat_falla, lon_falla],
-        popup=f"Falla Km {distancia_falla:.2f}",
-        icon=folium.Icon(color="green", icon="bolt", prefix="fa")
+        popup=f"Falla Km {distancia_falla_km:.2f}",
+        icon=folium.Icon(color="green", icon="bolt", prefix="fa"),
     ).add_to(m)
 
     st_folium(m, width="100%", height=600)
+
+    if mostrar_restricciones and not df_rest_linea.empty:
+        tipos_presentes = sorted(df_rest_linea["Tipo"].unique())
+        leyenda_html = "".join(
+            f'<span class="leyenda-item"><span class="leyenda-swatch" '
+            f'style="background-color:{COLORES_TIPO.get(t, "#808080")}"></span>{t}</span>'
+            for t in tipos_presentes
+        )
+        st.markdown(leyenda_html, unsafe_allow_html=True)
