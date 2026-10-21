@@ -460,6 +460,13 @@ df["Latitud"] = pd.to_numeric(df["Latitud"], errors="coerce")
 df["Longitud"] = pd.to_numeric(df["Longitud"], errors="coerce")
 df["Torre"] = df["Torre"].astype(str).str.strip()
 
+# Una sola torre con coordenada vacía o mal escrita rompe el trazado en PyDeck
+# (genera los "abanicos" triangulares gigantes), así que se descartan aquí,
+# en el origen, antes de construir líneas, distancias o capas del mapa.
+filas_antes = len(df)
+df = df.dropna(subset=["Latitud", "Longitud"]).reset_index(drop=True)
+filas_descartadas = filas_antes - len(df)
+
 datos_lineas = {}
 for linea, grupo in df.groupby("Linea"):
     grupo = grupo.reset_index(drop=True)
@@ -492,6 +499,12 @@ col_control, col_mapa = st.columns([1, 3])
 
 with col_control:
     st.header("📋 Datos del Evento")
+
+    if filas_descartadas > 0:
+        st.warning(
+            f"⚠️ {filas_descartadas} torre(s) con coordenadas inválidas o vacías fueron "
+            "excluidas de consolidado_total.xlsx (causaban errores de dibujo en el mapa)."
+        )
 
     linea_seleccionada = st.selectbox("Seleccione la Línea:", list(datos_lineas.keys()))
     df_linea = datos_lineas[linea_seleccionada]
@@ -644,7 +657,9 @@ with col_mapa:
             get_path="path",
             get_color=hex_a_rgb(COLOR_LINEA_TENUE, 180),
             get_width=1.5,
-            width_units="pixels",
+            width_units=pdk.types.String("pixels"),
+            joint_rounded=True,
+            cap_rounded=True,
             pickable=True,
         )
     )
@@ -666,7 +681,9 @@ with col_mapa:
             get_path="path",
             get_color=hex_a_rgb(AZUL_CONELSUR),
             get_width=3,
-            width_units="pixels",
+            width_units=pdk.types.String("pixels"),
+            joint_rounded=True,
+            cap_rounded=True,
             pickable=True,
         )
     )
@@ -709,7 +726,9 @@ with col_mapa:
                     get_path="path",
                     get_color="color",
                     get_width=4,
-                    width_units="pixels",
+                    width_units=pdk.types.String("pixels"),
+                    joint_rounded=True,
+                    cap_rounded=True,
                     pickable=True,
                 )
             )
