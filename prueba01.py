@@ -307,6 +307,7 @@ if logo_b64:
             <img src="data:image/jpeg;base64,{logo_b64}" alt="Conelsur">
             <div class="titulo-wrap">
                 <h1>Centro de Control: Localizador de Fallas Georreferenciado</h1>
+                <p>Herramienta analítica para la optimización de tiempos de respuesta post-falla</p>
             </div>
             <span class="conelsur-badge">● SEIN en línea</span>
         </div>
@@ -536,25 +537,69 @@ with col_mapa:
         unsafe_allow_html=True,
     )
 
-    m = folium.Map(location=[lat_falla, lon_falla], zoom_start=11)
+    m = folium.Map(location=[lat_falla, lon_falla], zoom_start=6)
 
-    coord_linea = list(zip(df_linea["Latitud"], df_linea["Longitud"]))
-    folium.PolyLine(coord_linea, color=AZUL_CONELSUR, weight=4).add_to(m)
+    COLOR_LINEA_TENUE = "#AEB8D1"
 
-    for _, fila in df_linea.iterrows():
-        popup_torre = (
-            f'<div style="font-family:Inter,Arial,sans-serif;">'
-            f'<b style="color:{AZUL_CONELSUR};">{fila["Torre"]}</b><br>'
+    def tooltip_torre(nombre_linea, fila):
+        return (
+            f'<div style="font-family:Inter,Arial,sans-serif; font-size:12.5px;">'
+            f'<b>Línea:</b> {nombre_linea}<br>'
+            f'<b>Torre:</b> {fila["Torre"]}<br>'
             f'Km {fila["Distancia_m"]/1000:.2f}</div>'
         )
+
+    # ---------------------------------------------------
+    # Todas las demás líneas, en tono tenue (se dibujan primero
+    # para que la línea seleccionada quede resaltada encima)
+    # ---------------------------------------------------
+    capa_otras_lineas = folium.FeatureGroup(name="Otras líneas")
+    for nombre_linea, grupo_linea in datos_lineas.items():
+        if nombre_linea == linea_seleccionada:
+            continue
+        coords = list(zip(grupo_linea["Latitud"], grupo_linea["Longitud"]))
+        folium.PolyLine(
+            coords,
+            color=COLOR_LINEA_TENUE,
+            weight=2,
+            opacity=0.7,
+            tooltip=f"Línea: {nombre_linea}",
+        ).add_to(capa_otras_lineas)
+        for _, fila in grupo_linea.iterrows():
+            folium.CircleMarker(
+                location=[fila["Latitud"], fila["Longitud"]],
+                radius=3,
+                color=COLOR_LINEA_TENUE,
+                weight=1,
+                fill=True,
+                fill_color="white",
+                fill_opacity=1,
+                tooltip=tooltip_torre(nombre_linea, fila),
+            ).add_to(capa_otras_lineas)
+    capa_otras_lineas.add_to(m)
+
+    # ---------------------------------------------------
+    # Línea seleccionada, resaltada en azul de marca
+    # ---------------------------------------------------
+    coord_linea = list(zip(df_linea["Latitud"], df_linea["Longitud"]))
+    folium.PolyLine(
+        coord_linea,
+        color=AZUL_CONELSUR,
+        weight=5,
+        opacity=1,
+        tooltip=f"Línea: {linea_seleccionada}",
+    ).add_to(m)
+
+    for _, fila in df_linea.iterrows():
         folium.CircleMarker(
             location=[fila["Latitud"], fila["Longitud"]],
-            radius=4,
+            radius=5,
             color=AZUL_CONELSUR,
+            weight=2,
             fill=True,
             fill_color="white",
             fill_opacity=1,
-            popup=popup_torre,
+            tooltip=tooltip_torre(linea_seleccionada, fila),
         ).add_to(m)
 
     if mostrar_restricciones and not df_rest_linea.empty:
@@ -587,7 +632,6 @@ with col_mapa:
                     popup=popup_html,
                 ).add_to(capa_restricciones)
         capa_restricciones.add_to(m)
-        folium.LayerControl(collapsed=False).add_to(m)
 
     popup_falla = (
         f'<div style="font-family:Inter,Arial,sans-serif;">'
@@ -599,6 +643,14 @@ with col_mapa:
         popup=popup_falla,
         icon=folium.Icon(color="green", icon="bolt", prefix="fa"),
     ).add_to(m)
+
+    folium.LayerControl(collapsed=False).add_to(m)
+
+    # Vista inicial: encuadra todas las líneas (no solo la seleccionada)
+    todas_lat = df["Latitud"].dropna()
+    todas_lon = df["Longitud"].dropna()
+    if not todas_lat.empty:
+        m.fit_bounds([[todas_lat.min(), todas_lon.min()], [todas_lat.max(), todas_lon.max()]])
 
     st.markdown('<div class="mapa-card">', unsafe_allow_html=True)
     st_folium(m, width="100%", height=580)
