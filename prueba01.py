@@ -430,51 +430,6 @@ with col_control:
                 else:
                     st.warning(detalle)
 
-    # ---------------------------------------------------
-    # Capas opcionales: sismos (USGS) e incendios (NASA FIRMS)
-    # ---------------------------------------------------
-    st.subheader("🛰️ Capas adicionales (opcional)")
-
-    margen_grados = 0.5  # ~55 km de contexto alrededor de la línea
-    min_lat_bbox = df_linea["Latitud"].min() - margen_grados
-    max_lat_bbox = df_linea["Latitud"].max() + margen_grados
-    min_lon_bbox = df_linea["Longitud"].min() - margen_grados
-    max_lon_bbox = df_linea["Longitud"].max() + margen_grados
-
-    mostrar_sismos = st.checkbox("Mostrar sismos recientes (USGS)", value=False)
-    df_sismos = pd.DataFrame()
-    if mostrar_sismos:
-        dias_sismos = st.slider("Sismos: días hacia atrás", 1, 60, 30)
-        mag_min = st.slider("Sismos: magnitud mínima", 2.5, 6.0, 3.5, step=0.1)
-        try:
-            df_sismos = obtener_sismos_usgs(
-                min_lat_bbox, max_lat_bbox, min_lon_bbox, max_lon_bbox, dias_sismos, mag_min
-            )
-            if df_sismos.empty:
-                st.info("Sin sismos registrados con esos filtros en el área de la línea.")
-        except Exception as e:
-            st.warning(f"No se pudo consultar el servicio de sismos (USGS): {e}")
-
-    mostrar_incendios = st.checkbox("Mostrar incendios activos (NASA FIRMS)", value=False)
-    df_incendios = pd.DataFrame()
-    if mostrar_incendios:
-        firms_key = st.text_input(
-            "FIRMS MAP_KEY (gratis en firms.modaps.eosdis.nasa.gov/api/map_key)",
-            type="password",
-        )
-        dias_incendios = st.slider("Incendios: días hacia atrás", 1, 7, 1)
-        if firms_key:
-            try:
-                df_incendios = obtener_incendios_firms(
-                    firms_key, min_lat_bbox, max_lat_bbox, min_lon_bbox, max_lon_bbox, dias_incendios
-                )
-                if df_incendios.empty:
-                    st.info("Sin focos de calor detectados en el área de la línea.")
-            except Exception as e:
-                st.warning(f"No se pudo consultar FIRMS: {e}")
-        else:
-            st.caption("Ingresa tu MAP_KEY para activar esta capa.")
-
 # =========================================================
 # 6. MAPA
 # =========================================================
