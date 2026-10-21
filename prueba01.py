@@ -309,83 +309,6 @@ def codigos_en_texto(texto):
     return set(int(n) for n in re.findall(r"\d+", str(texto)))
 
 
-def parsear_pagina_bomberos(html):
-    """Extrae la emergencia (lat/lon, tipo, dirección, máquinas) del código fuente
-    de una página 'Ubicación de la emergencia' de Bomberos Perú (sgonorte...gob.pe).
-    No se consulta la página automáticamente (su robots.txt lo impide); el usuario
-    pega el código fuente que ya tiene abierto en su navegador (Ctrl+U)."""
-    m = re.search(r"L\.marker\(\[(-?\d+\.\d+),\s*(-?\d+\.\d+)\],\s*\{\s*icon:\s*emergencyIcon", html)
-    if not m:
-        return None
-
-    resultado = {"lat": float(m.group(1)), "lon": float(m.group(2))}
-
-    popup_match = re.search(
-        r"icon:\s*emergencyIcon\s*\}\)\.addTo\(map\)\.bindPopup\('(.*?)'\)\.openPopup\(\)",
-        html, re.DOTALL,
-    )
-    popup_html = popup_match.group(1) if popup_match else ""
-
-    def extraer_campo(etiqueta):
-        patt = re.search(
-            rf'{etiqueta}.*?</tr>\s*<tr><td colspan="2">(.*?)</td></tr>',
-            popup_html, re.DOTALL,
-        )
-        return patt.group(1).strip() if patt else None
-
-    resultado["tipo"] = extraer_campo("TIPO DE EMERGENCIA:") or "No especificado"
-    resultado["direccion"] = extraer_campo("DIRECCION:") or "No especificado"
-    resultado["maquinas"] = extraer_campo("MAQUINAS:") or "No especificado"
-    return resultado
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def obtener_sismos_usgs(min_lat, max_lat, min_lon, max_lon, dias=30, mag_min=3.5):
-    """Sismos recientes vía el catálogo público de USGS (incluye Perú, sin clave)."""
-    url = "https://earthquake.usgs.gov/fdsnws/event/1/query"
-    params = {
-        "format": "geojson",
-        "starttime": (pd.Timestamp.utcnow() - pd.Timedelta(days=dias)).strftime("%Y-%m-%d"),
-        "minlatitude": min_lat,
-        "maxlatitude": max_lat,
-        "minlongitude": min_lon,
-        "maxlongitude": max_lon,
-        "minmagnitude": mag_min,
-    }
-    r = requests.get(url, params=params, timeout=15)
-    r.raise_for_status()
-    data = r.json()
-
-    registros = []
-    for feat in data.get("features", []):
-        coords = feat["geometry"]["coordinates"]
-        props = feat["properties"]
-        registros.append(
-            {
-                "lat": coords[1],
-                "lon": coords[0],
-                "profundidad_km": coords[2],
-                "magnitud": props.get("mag"),
-                "lugar": props.get("place"),
-                "tiempo": pd.to_datetime(props.get("time"), unit="ms", utc=True),
-            }
-        )
-    return pd.DataFrame(registros)
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def obtener_incendios_firms(map_key, min_lat, max_lat, min_lon, max_lon, dias=1):
-    """Focos de calor activos vía NASA FIRMS (requiere MAP_KEY gratuita)."""
-    bbox = f"{min_lon},{min_lat},{max_lon},{max_lat}"
-    url = f"https://firms.modaps.eosdis.nasa.gov/api/area/csv/{map_key}/VIIRS_SNPP_NRT/{bbox}/{dias}"
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    df = pd.read_csv(io.StringIO(r.text))
-    if "latitude" not in df.columns:
-        # FIRMS devuelve un CSV de una sola columna con el mensaje de error (p. ej. clave inválida)
-        raise ValueError(df.to_string(index=False) if not df.empty else "Respuesta vacía de FIRMS")
-    return df
-
 
 # =========================================================
 # 4. CARGAR DATOS
@@ -552,81 +475,6 @@ with col_control:
         else:
             st.caption("Ingresa tu MAP_KEY para activar esta capa.")
 
-    # ---------------------------------------------------
-    # Emergencias de Bomberos Perú (pegadas manualmente)
-    # ---------------------------------------------------
-    st.subheader("🚒 Emergencias de Bomberos (opcional)")
-    st.caption(
-        "El sitio de Bomberos bloquea el acceso automático. Copia el código fuente "
-        "(clic derecho → 'Ver código fuente de la página', o Ctrl+U) y pégalo abajo."
-    )
-
-    tab_lista, tab_individual = st.tabs(["📋 Lista completa (/24horas)", "🔥 Una emergencia (numparte)"])
-
-    emergencias_activas = pd.DataFrame()
-    with tab_lista:
-        st.caption(
-            "Pega el código fuente de https://sgonorte.bomberosperu.gob.pe/24horas "
-            "(la página con la tabla de emergencias de las últimas 24 horas)."
-        )
-        html_lista = st.text_area("Código fuente de la lista de emergencias", height=100, key="html_lista")
-        if html_lista.strip():
-            emergencias_activas = parsear_lista_emergencias(html_lista)
-            if emergencias_activas.empty:
-                st.warning("No se reconoció ninguna fila. Verifica que sea el código de la página /24horas.")
-            else:
-                solo_atendiendo = st.checkbox("Mostrar solo las que dicen ATENDIENDO", value=True)
-                df_mostrar = emergencias_activas
-                if solo_atendiendo:
-                    df_mostrar = emergencias_activas[emergencias_activas["estado"] == "ATENDIENDO"]
-                st.success(f"{len(df_mostrar)} emergencia(s) reconocida(s) (de {len(emergencias_activas)} en la tabla)")
-
-                con_coords = df_mostrar.dropna(subset=["lat", "lon"])
-                cercanas = []
-                for _, r in con_coords.iterrows():
-                    dist_m, torre = punto_mas_cercano_en_linea(df_linea, r["lat"], r["lon"])
-                    if dist_m < 500:
-                        cercanas.append((r, dist_m, torre))
-
-                if cercanas:
-                    st.error(f"⚠️ {len(cercanas)} emergencia(s) a menos de 500 m de **{linea_seleccionada}**")
-                    for r, dist_m, torre in cercanas:
-                        st.write(
-                            f"**Parte {r['parte']}** — {r['tipo']}  \n"
-                            f"{r['direccion']}  \n"
-                            f"A {dist_m:.0f} m de la torre {torre['Torre']} · {r['estado']}"
-                        )
-                else:
-                    st.info("Ninguna emergencia de la lista cae cerca de la línea seleccionada.")
-
-                emergencias_activas = df_mostrar  # lo que se dibuja en el mapa
-
-    emergencia = None
-    with tab_individual:
-        html_bomberos = st.text_area("Código fuente de la página de la emergencia", height=100, key="html_individual")
-        if html_bomberos.strip():
-            emergencia = parsear_pagina_bomberos(html_bomberos)
-            if emergencia is None:
-                st.warning("No se reconoció una emergencia en el código pegado. Verifica que sea la página correcta.")
-            else:
-                st.error(f"🔥 {emergencia['tipo']}")
-                st.write(f"**Dirección:** {emergencia['direccion']}")
-                st.write(f"**Máquinas:** {emergencia['maquinas']}")
-
-                dist_torre_m, torre_cercana = punto_mas_cercano_en_linea(
-                    df_linea, emergencia["lat"], emergencia["lon"]
-                )
-                if dist_torre_m < 500:
-                    st.error(
-                        f"⚠️ A solo {dist_torre_m:.0f} m de la torre {torre_cercana['Torre']} "
-                        f"de **{linea_seleccionada}**"
-                    )
-                else:
-                    st.info(
-                        f"A {dist_torre_m/1000:.2f} km de la torre más cercana "
-                        f"({torre_cercana['Torre']}) de la línea seleccionada"
-                    )
-
 # =========================================================
 # 6. MAPA
 # =========================================================
@@ -700,23 +548,6 @@ with col_mapa:
             ).add_to(capa_sismos)
         capa_sismos.add_to(m)
 
-    if mostrar_incendios and not df_incendios.empty:
-        capa_incendios = folium.FeatureGroup(name="Incendios activos (FIRMS)")
-        for _, f in df_incendios.iterrows():
-            folium.CircleMarker(
-                location=[f["latitude"], f["longitude"]],
-                radius=5,
-                color="#FF4500",
-                fill=True,
-                fill_color="#FF4500",
-                fill_opacity=0.7,
-                popup=(
-                    "🔥 Foco de calor<br>"
-                    f"Fecha: {f.get('acq_date', '?')} {f.get('acq_time', '')}<br>"
-                    f"FRP: {f.get('frp', '?')} MW · Confianza: {f.get('confidence', '?')}"
-                ),
-            ).add_to(capa_incendios)
-        capa_incendios.add_to(m)
 
     if emergencia is not None:
         capa_emergencia = folium.FeatureGroup(name="Emergencia Bomberos")
@@ -747,16 +578,6 @@ with col_mapa:
                 icon=folium.Icon(color=color_estado, icon="fire", prefix="fa"),
             ).add_to(capa_lista)
         capa_lista.add_to(m)
-
-    hay_capas_opcionales = (
-        (mostrar_restricciones and not df_rest_linea.empty)
-        or (mostrar_sismos and not df_sismos.empty)
-        or (mostrar_incendios and not df_incendios.empty)
-        or (emergencia is not None)
-        or (not emergencias_activas.empty)
-    )
-    if hay_capas_opcionales:
-        folium.LayerControl(collapsed=False).add_to(m)
 
     folium.Marker(
         location=[lat_falla, lon_falla],
