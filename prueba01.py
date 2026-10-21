@@ -2,10 +2,11 @@ import re
 import io
 import base64
 from pathlib import Path
+from io import BytesIO
 
 import streamlit as st
-import folium
-from streamlit_folium import st_folium
+import pydeck as pdk
+from PIL import Image, ImageDraw
 import pandas as pd
 import numpy as np
 import requests
@@ -307,7 +308,7 @@ if logo_b64:
             <img src="data:image/jpeg;base64,{logo_b64}" alt="Conelsur">
             <div class="titulo-wrap">
                 <h1>Centro de Control: Localizador de Fallas Georreferenciado</h1>
-              
+                <p>Herramienta analítica para la optimización de tiempos de respuesta post-falla</p>
             </div>
             <span class="conelsur-badge">● SEIN en línea</span>
         </div>
@@ -316,6 +317,7 @@ if logo_b64:
     )
 else:
     st.title("⚡ Centro de Control: Localizador de Fallas Georreferenciado")
+    st.markdown("Herramienta analítica para la optimización de tiempos de respuesta post-falla.")
     st.divider()
 
 # =========================================================
@@ -369,6 +371,24 @@ def codigo_de_nombre_linea(nombre_linea):
 
 def codigos_en_texto(texto):
     return set(int(n) for n in re.findall(r"\d+", str(texto)))
+
+
+def hex_a_rgb(color_hex, alpha=255):
+    """Convierte '#RRGGBB' a [r, g, b, alpha] para las capas de PyDeck."""
+    color_hex = color_hex.lstrip("#")
+    r, g, b = (int(color_hex[i:i + 2], 16) for i in (0, 2, 4))
+    return [r, g, b, alpha]
+
+
+@st.cache_resource(show_spinner=False)
+def generar_icono_cuadrado_b64(lado_px=28):
+    """Genera un cuadrado negro con borde blanco como PNG en base64, para el IconLayer de subestaciones."""
+    img = Image.new("RGBA", (lado_px, lado_px), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([2, 2, lado_px - 3, lado_px - 3], fill=(17, 17, 17, 255), outline=(255, 255, 255, 255), width=2)
+    buf = BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 # Subestaciones de origen/destino por código de línea (tomado de la hoja
@@ -602,116 +622,211 @@ with col_mapa:
         unsafe_allow_html=True,
     )
 
-    m = folium.Map(location=[lat_falla, lon_falla], zoom_start=6)
-
     COLOR_LINEA_TENUE = "#AEB8D1"
+    capas_pydeck = []
 
     # ---------------------------------------------------
-    # Todas las demás líneas, en tono tenue (se dibujan primero
-    # para que la línea seleccionada quede resaltada encima)
+    # Todas las demás líneas, en tono tenue
     # ---------------------------------------------------
-    capa_otras_lineas = folium.FeatureGroup(name="Otras líneas")
-    for nombre_linea, grupo_linea in datos_lineas.items():
-        if nombre_linea == linea_seleccionada:
-            continue
-        coords = list(zip(grupo_linea["Latitud"], grupo_linea["Longitud"]))
-        folium.PolyLine(
-            coords,
-            color=COLOR_LINEA_TENUE,
-            weight=2,
-            opacity=0.7,
-            tooltip=f"Línea: {nombre_linea}",
-        ).add_to(capa_otras_lineas)
-    capa_otras_lineas.add_to(m)
+    datos_otras_lineas = [
+        {
+            "path": grupo_linea[["Longitud", "Latitud"]].values.tolist(),
+            "nombre": f"Línea: {nombre_linea}",
+        }
+        for nombre_linea, grupo_linea in datos_lineas.items()
+        if nombre_linea != linea_seleccionada
+    ]
+    capas_pydeck.append(
+        pdk.Layer(
+            "PathLayer",
+            data=datos_otras_lineas,
+            get_path="path",
+            get_color=hex_a_rgb(COLOR_LINEA_TENUE, 180),
+            get_width=250,
+            width_min_pixels=1.5,
+            pickable=True,
+        )
+    )
 
     # ---------------------------------------------------
     # Línea seleccionada, resaltada en azul de marca
     # ---------------------------------------------------
-    coord_linea = list(zip(df_linea["Latitud"], df_linea["Longitud"]))
-    folium.PolyLine(
-        coord_linea,
-        color=AZUL_CONELSUR,
-        weight=5,
-        opacity=1,
-        tooltip=f"Línea: {linea_seleccionada}",
-    ).add_to(m)
+    dato_linea_sel = [
+        {
+            "path": df_linea[["Longitud", "Latitud"]].values.tolist(),
+            "nombre": f"Línea: {linea_seleccionada}",
+        }
+    ]
+    capas_pydeck.append(
+        pdk.Layer(
+            "PathLayer",
+            data=dato_linea_sel,
+            get_path="path",
+            get_color=hex_a_rgb(AZUL_CONELSUR),
+            get_width=450,
+            width_min_pixels=3.5,
+            pickable=True,
+        )
+    )
 
+    # ---------------------------------------------------
+    # Restricciones (zonas pobladas, cruces, etc.)
+    # ---------------------------------------------------
     if mostrar_restricciones and not df_rest_linea.empty:
-        capa_restricciones = folium.FeatureGroup(name="Restricciones")
+        datos_rest_tramo, datos_rest_punto = [], []
         for _, r in df_rest_linea.iterrows():
-            color = COLORES_TIPO.get(r["Tipo"], "#808080")
-            popup_html = (
-                f'<div style="font-family:Inter,Arial,sans-serif; font-size:13px;">'
-                f'<b style="color:{color};">{r["Tipo"]}</b> ({r["Fuente"]})<br>'
-                f'{r["Zona_Geografica"]}<br>'
-                f'{r["Texto_Original"]}<br>'
-                f'D. horizontal: {r["Distancia_Horizontal_m"]:.0f} m</div>'
+            color_rgb = hex_a_rgb(COLORES_TIPO.get(r["Tipo"], "#808080"), 200)
+            info = (
+                f"{r['Tipo']} — {r['Zona_Geografica']}\n"
+                f"{r['Texto_Original']}\n"
+                f"D. horizontal: {r['Distancia_Horizontal_m']:.0f} m · Fuente: {r['Fuente']}"
             )
             if r["Acumulado_Inicio_m"] == r["Acumulado_Fin_m"]:
-                folium.CircleMarker(
-                    location=[r["lat_ini"], r["lon_ini"]],
-                    radius=6,
-                    color=color,
-                    fill=True,
-                    fill_color=color,
-                    fill_opacity=0.8,
-                    popup=popup_html,
-                ).add_to(capa_restricciones)
+                datos_rest_punto.append(
+                    {"position": [r["lon_ini"], r["lat_ini"]], "color": color_rgb, "info": info}
+                )
             else:
-                folium.PolyLine(
-                    [[r["lat_ini"], r["lon_ini"]], [r["lat_fin"], r["lon_fin"]]],
-                    color=color,
-                    weight=6,
-                    opacity=0.65,
-                    popup=popup_html,
-                ).add_to(capa_restricciones)
-        capa_restricciones.add_to(m)
-
-    if mostrar_subestaciones and subestaciones:
-        capa_subestaciones = folium.FeatureGroup(name="Subestaciones")
-        for nombre_se, (lat_se, lon_se) in subestaciones.items():
-            if pd.isna(lat_se) or pd.isna(lon_se):
-                continue
-            etiqueta_html = (
-                '<div style="display:flex; align-items:center; gap:4px; white-space:nowrap;">'
-                '<div style="width:13px; height:13px; background-color:#111111; '
-                'border:1px solid #FFFFFF; flex-shrink:0;"></div>'
-                '<span style="font-family:Inter,Arial,sans-serif; font-size:11px; font-weight:600; '
-                'color:#111111; background-color:rgba(255,255,255,0.85); padding:1px 5px; '
-                f'border-radius:3px;">{nombre_se}</span>'
-                "</div>"
+                datos_rest_tramo.append(
+                    {
+                        "path": [[r["lon_ini"], r["lat_ini"]], [r["lon_fin"], r["lat_fin"]]],
+                        "color": color_rgb,
+                        "info": info,
+                    }
+                )
+        if datos_rest_tramo:
+            capas_pydeck.append(
+                pdk.Layer(
+                    "PathLayer",
+                    data=datos_rest_tramo,
+                    get_path="path",
+                    get_color="color",
+                    get_width=600,
+                    width_min_pixels=4,
+                    pickable=True,
+                )
             )
-            folium.Marker(
-                location=[lat_se, lon_se],
-                icon=folium.DivIcon(
-                    html=etiqueta_html,
-                    icon_size=(220, 20),
-                    icon_anchor=(6, 10),
-                ),
-            ).add_to(capa_subestaciones)
-        capa_subestaciones.add_to(m)
+        if datos_rest_punto:
+            capas_pydeck.append(
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=datos_rest_punto,
+                    get_position="position",
+                    get_fill_color="color",
+                    get_radius=120,
+                    radius_min_pixels=5,
+                    pickable=True,
+                )
+            )
 
-    popup_falla = (
-        f'<div style="font-family:Inter,Arial,sans-serif;">'
-        f'<b style="color:{VERDE_CONELSUR_OSCURO};">⚡ Falla estimada</b><br>'
-        f'Km {distancia_falla_km:.2f}</div>'
+    # ---------------------------------------------------
+    # Subestaciones: cuadrado negro + nombre siempre visible
+    # ---------------------------------------------------
+    if mostrar_subestaciones and subestaciones:
+        icono_subestacion = {
+            "url": generar_icono_cuadrado_b64(),
+            "width": 28,
+            "height": 28,
+            "anchorY": 14,
+            "anchorX": 14,
+        }
+        datos_subestaciones = [
+            {"position": [lon_se, lat_se], "nombre": nombre_se, "icono": icono_subestacion}
+            for nombre_se, (lat_se, lon_se) in subestaciones.items()
+            if not (pd.isna(lat_se) or pd.isna(lon_se))
+        ]
+        capas_pydeck.append(
+            pdk.Layer(
+                "IconLayer",
+                data=datos_subestaciones,
+                get_icon="icono",
+                get_position="position",
+                get_size=22,
+                size_scale=1,
+                pickable=True,
+            )
+        )
+        capas_pydeck.append(
+            pdk.Layer(
+                "TextLayer",
+                data=datos_subestaciones,
+                get_position="position",
+                get_text="nombre",
+                get_size=13,
+                get_color=[17, 17, 17, 255],
+                get_background_color=[255, 255, 255, 220],
+                background=True,
+                get_pixel_offset=[26, 0],
+                get_alignment_baseline="'center'",
+                get_text_anchor="'start'",
+                font_family="Inter, Arial, sans-serif",
+            )
+        )
+
+    # ---------------------------------------------------
+    # Marcador de la falla estimada
+    # ---------------------------------------------------
+    dato_falla = [
+        {
+            "position": [lon_falla, lat_falla],
+            "nombre": f"⚡ Falla estimada — Km {distancia_falla_km:.2f}",
+        }
+    ]
+    capas_pydeck.append(
+        pdk.Layer(
+            "ScatterplotLayer",
+            data=dato_falla,
+            get_position="position",
+            get_fill_color=hex_a_rgb(VERDE_CONELSUR),
+            get_line_color=[255, 255, 255, 255],
+            line_width_min_pixels=2,
+            stroked=True,
+            get_radius=180,
+            radius_min_pixels=8,
+            pickable=True,
+        )
     )
-    folium.Marker(
-        location=[lat_falla, lon_falla],
-        popup=popup_falla,
-        icon=folium.Icon(color="green", icon="bolt", prefix="fa"),
-    ).add_to(m)
+    capas_pydeck.append(
+        pdk.Layer(
+            "TextLayer",
+            data=dato_falla,
+            get_position="position",
+            get_text="nombre",
+            get_size=13,
+            get_color=hex_a_rgb(VERDE_CONELSUR_OSCURO),
+            get_background_color=[255, 255, 255, 220],
+            background=True,
+            get_pixel_offset=[0, -18],
+            font_family="Poppins, Arial, sans-serif",
+        )
+    )
 
-    folium.LayerControl(collapsed=False).add_to(m)
-
+    # ---------------------------------------------------
     # Vista inicial: encuadra todas las líneas (no solo la seleccionada)
-    todas_lat = df["Latitud"].dropna()
-    todas_lon = df["Longitud"].dropna()
-    if not todas_lat.empty:
-        m.fit_bounds([[todas_lat.min(), todas_lon.min()], [todas_lat.max(), todas_lon.max()]])
+    # ---------------------------------------------------
+    puntos_vista = df[["Longitud", "Latitud"]].dropna().values.tolist()
+    vista_inicial = pdk.data_utils.compute_view(puntos_vista) if puntos_vista else pdk.ViewState(
+        latitude=lat_falla, longitude=lon_falla, zoom=6
+    )
+    vista_inicial.pitch = 0
+
+    mapa_deck = pdk.Deck(
+        layers=capas_pydeck,
+        initial_view_state=vista_inicial,
+        map_provider="carto",
+        map_style="light",
+        tooltip={
+            "html": "<b>{nombre}</b>{info}",
+            "style": {
+                "backgroundColor": AZUL_CONELSUR,
+                "color": "white",
+                "fontFamily": "Inter, Arial, sans-serif",
+                "fontSize": "12.5px",
+            },
+        },
+    )
 
     st.markdown('<div class="mapa-card">', unsafe_allow_html=True)
-    st_folium(m, width="100%", height=580)
+    st.pydeck_chart(mapa_deck, use_container_width=True, height=580)
     st.markdown("</div>", unsafe_allow_html=True)
 
     if mostrar_restricciones and not df_rest_linea.empty:
@@ -730,3 +845,9 @@ with col_mapa:
             """,
             unsafe_allow_html=True,
         )
+
+st.markdown(
+    '<div class="conelsur-footer">CONELSUR — Centro de Control de Operaciones de Transmisión · '
+    'Sistema de Localización de Fallas SEIN</div>',
+    unsafe_allow_html=True,
+)
