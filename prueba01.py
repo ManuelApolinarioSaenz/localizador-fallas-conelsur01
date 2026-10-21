@@ -372,6 +372,66 @@ def codigos_en_texto(texto):
     return set(int(n) for n in re.findall(r"\d+", str(texto)))
 
 
+# Subestaciones de origen/destino por código de línea (tomado de la hoja
+# "INFORMACIÓN LLTT" del Excel de torres de Conelsur). Se usa para nombrar
+# los extremos de cada línea; la coordenada se aproxima con la primera y
+# última torre registrada de esa línea en consolidado_total.xlsx.
+SUBESTACIONES_POR_LINEA = {
+    2001: ("HUINCO", "CARAPONGO"),
+    2002: ("HUINCO", "CARAPONGO"),
+    2701: ("CARAPONGO", "SANTA ROSA"),
+    2702: ("CARAPONGO", "SANTA ROSA"),
+    2007: ("MATUCANA", "CALLAHUANCA"),
+    2008: ("CALLAHUANCA", "CARAPONGO"),
+    2009: ("CALLAHUANCA", "CARAPONGO"),
+    2708: ("CARAPONGO", "CAJAMARQUILLA"),
+    2709: ("CARAPONGO", "CAJAMARQUILLA"),
+    2014: ("CAJAMARQUILLA", "CHAVARRÍA"),
+    2015: ("CAJAMARQUILLA", "CHAVARRÍA"),
+    2256: ("YANANGO", "PACHACHACA"),
+    2257: ("CHIMAY", "YANANGO"),
+    2716: ("CALLAHUANCA REP", "CALLAHUANCA CNS"),
+    2260: ("CAJAMARCA NORTE", "TRUJILLO NORTE"),
+    2263: ("CAJAMARCA NORTE", "CERRO CORONA"),
+    1047: ("ARES", "TALTA"),
+    1040: ("TALTA", "CALLALLI"),
+    6011: ("MOYOPAMPA", "PORTILLO"),
+    6020: ("MOYOPAMPA", "PORTILLO"),
+    6436: ("PORTILLO", "GLORIA"),
+    6437: ("PORTILLO", "GLORIA"),
+    6031: ("CALLAHUANCA", "HUACHIPA"),
+    6040: ("CALLAHUANCA", "HUAMPANÍ"),
+    6055: ("MOYOPAMPA", "SALAMANCA"),
+    6060: ("MOYOPAMPA", "SALAMANCA"),
+    6068: ("SALAMANCA", "BALNEARIOS"),
+    6111: ("CALLAHUANCA", "MOYOPAMPA"),
+    6434: ("SANTA ROSA ANTIGUA", "GLORIA"),
+    6435: ("SANTA ROSA ANTIGUA", "GLORIA"),
+    6544: ("HUAMPANÍ", "ÑAÑA"),
+    6577: ("ÑAÑA", "PORTILLO"),
+    6578: ("PORTILLO", "SANTA CLARA"),
+}
+
+
+def construir_subestaciones(datos_lineas):
+    """Ubica cada subestación (nombre) en la coordenada de la primera/última
+    torre de alguna línea que la tenga como extremo. Si varias líneas comparten
+    subestación, se usa la primera coincidencia encontrada."""
+    subestaciones = {}
+    for nombre_linea, grupo in datos_lineas.items():
+        codigo = codigo_de_nombre_linea(nombre_linea)
+        extremos = SUBESTACIONES_POR_LINEA.get(codigo)
+        if not extremos or grupo.empty:
+            continue
+        nombre_origen, nombre_destino = extremos
+        primera, ultima = grupo.iloc[0], grupo.iloc[-1]
+        if nombre_origen not in subestaciones:
+            subestaciones[nombre_origen] = (primera["Latitud"], primera["Longitud"])
+        if nombre_destino not in subestaciones:
+            subestaciones[nombre_destino] = (ultima["Latitud"], ultima["Longitud"])
+    return subestaciones
+
+
 # =========================================================
 # 4. CARGAR DATOS
 # =========================================================
@@ -392,6 +452,10 @@ for linea, grupo in df.groupby("Linea"):
         )
         grupo.loc[i, "Distancia_m"] = grupo.loc[i - 1, "Distancia_m"] + d
     datos_lineas[linea] = grupo
+
+# Subestaciones (origen/destino de cada línea), ubicadas con la primera
+# y última torre registrada de la línea correspondiente.
+subestaciones = construir_subestaciones(datos_lineas)
 
 # Restricciones (zonas pobladas, cruces de carretera/río, etc.)
 try:
@@ -429,6 +493,8 @@ with col_control:
     else:
         mostrar_restricciones = False
         st.warning("No se encontró restricciones_conelsur.csv en el repositorio.")
+
+    mostrar_subestaciones = st.checkbox("Mostrar subestaciones (cuadrados negros)", value=True)
 
     # ---------------------------------------------------
     # Ubicación de la falla
@@ -601,6 +667,22 @@ with col_mapa:
                     popup=popup_html,
                 ).add_to(capa_restricciones)
         capa_restricciones.add_to(m)
+
+    if mostrar_subestaciones and subestaciones:
+        capa_subestaciones = folium.FeatureGroup(name="Subestaciones")
+        icono_cuadrado_css = "width:14px; height:14px; background-color:#111111; border:1px solid #FFFFFF;"
+        for nombre_se, (lat_se, lon_se) in subestaciones.items():
+            if pd.isna(lat_se) or pd.isna(lon_se):
+                continue
+            folium.Marker(
+                location=[lat_se, lon_se],
+                tooltip=(
+                    f'<div style="font-family:Inter,Arial,sans-serif; font-size:12.5px;">'
+                    f'<b>Subestación:</b> {nombre_se}</div>'
+                ),
+                icon=folium.DivIcon(html=f'<div style="{icono_cuadrado_css}"></div>'),
+            ).add_to(capa_subestaciones)
+        capa_subestaciones.add_to(m)
 
     popup_falla = (
         f'<div style="font-family:Inter,Arial,sans-serif;">'
