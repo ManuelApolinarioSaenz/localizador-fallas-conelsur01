@@ -34,7 +34,7 @@ COLORES_TIPO = {
 st.set_page_config(
     layout="wide",
     page_title="Sistema de Localización de Fallas - SEIN",
-    page_icon="⚡",
+    page_icon="",
 )
 
 # =========================================================
