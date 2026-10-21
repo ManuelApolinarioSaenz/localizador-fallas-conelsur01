@@ -346,7 +346,7 @@ except FileNotFoundError:
 col_control, col_mapa = st.columns([1, 3])
 
 with col_control:
-    st.header("📋 Datos del Evento")
+    st.header(" Datos del Evento")
 
     linea_seleccionada = st.selectbox("Seleccione la Línea:", list(datos_lineas.keys()))
     df_linea = datos_lineas[linea_seleccionada]
@@ -478,61 +478,6 @@ with col_mapa:
                     popup=popup_html,
                 ).add_to(capa_restricciones)
         capa_restricciones.add_to(m)
-
-    if mostrar_sismos and not df_sismos.empty:
-        capa_sismos = folium.FeatureGroup(name="Sismos recientes (USGS)")
-        for _, s in df_sismos.iterrows():
-            if s["magnitud"] < 4.5:
-                color_sismo = "#FFD700"
-            elif s["magnitud"] < 6.0:
-                color_sismo = "#FF8C00"
-            else:
-                color_sismo = "#D32F2F"
-            folium.CircleMarker(
-                location=[s["lat"], s["lon"]],
-                radius=3 + s["magnitud"] * 1.5,
-                color=color_sismo,
-                fill=True,
-                fill_color=color_sismo,
-                fill_opacity=0.6,
-                popup=(
-                    f"<b>M{s['magnitud']:.1f}</b> — {s['lugar']}<br>"
-                    f"Profundidad: {s['profundidad_km']:.0f} km<br>"
-                    f"{s['tiempo'].strftime('%Y-%m-%d %H:%M UTC')}"
-                ),
-            ).add_to(capa_sismos)
-        capa_sismos.add_to(m)
-
-
-    if emergencia is not None:
-        capa_emergencia = folium.FeatureGroup(name="Emergencia Bomberos")
-        folium.Marker(
-            location=[emergencia["lat"], emergencia["lon"]],
-            popup=(
-                f"<b>{emergencia['tipo']}</b><br>"
-                f"{emergencia['direccion']}<br>"
-                f"Máquinas: {emergencia['maquinas']}"
-            ),
-            icon=folium.Icon(color="red", icon="fire", prefix="fa"),
-        ).add_to(capa_emergencia)
-        capa_emergencia.add_to(m)
-
-    if not emergencias_activas.empty:
-        capa_lista = folium.FeatureGroup(name="Emergencias activas (lista)")
-        for _, r in emergencias_activas.dropna(subset=["lat", "lon"]).iterrows():
-            color_estado = "red" if r["estado"] == "ATENDIENDO" else "gray"
-            folium.Marker(
-                location=[r["lat"], r["lon"]],
-                popup=(
-                    f"<b>Parte {r['parte']}</b> ({r['estado']})<br>"
-                    f"{r['tipo']}<br>"
-                    f"{r['direccion']}<br>"
-                    f"{r['fecha_hora']}<br>"
-                    f"Máquinas: {r['maquinas']}"
-                ),
-                icon=folium.Icon(color=color_estado, icon="fire", prefix="fa"),
-            ).add_to(capa_lista)
-        capa_lista.add_to(m)
 
     folium.Marker(
         location=[lat_falla, lon_falla],
