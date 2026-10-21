@@ -100,7 +100,7 @@ def cargar_logo_base64(ruta: str) -> str:
     except FileNotFoundError:
         return ""
 
-logo_b64 = cargar_logo_base64("conelsur_logo.jpg")
+logo_b64 = cargar_logo_base64("Conelsur color - alta.jpg")
 
 if logo_b64:
     st.markdown(
