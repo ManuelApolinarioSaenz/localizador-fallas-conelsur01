@@ -307,7 +307,7 @@ if logo_b64:
             <img src="data:image/jpeg;base64,{logo_b64}" alt="Conelsur">
             <div class="titulo-wrap">
                 <h1>Centro de Control: Localizador de Fallas Georreferenciado</h1>
-                <p>Herramienta analítica para la optimización de tiempos de respuesta post-falla</p>
+              
             </div>
             <span class="conelsur-badge">● SEIN en línea</span>
         </div>
@@ -731,9 +731,3 @@ with col_mapa:
             """,
             unsafe_allow_html=True,
         )
-
-st.markdown(
-    '<div class="conelsur-footer">CONELSUR — Centro de Control de Operaciones de Transmisión · '
-    'Sistema de Localización de Fallas SEIN</div>',
-    unsafe_allow_html=True,
-)
