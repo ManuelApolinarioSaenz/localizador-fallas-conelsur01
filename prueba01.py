@@ -117,7 +117,7 @@ if logo_b64:
     )
 else:
     # Respaldo si el logo no se encuentra en el repo
-    st.title("⚡ Centro de Control: Localizador de Fallas Georreferenciado")
+    st.title("Centro de Control: Localizador de Fallas Georreferenciado")
     st.markdown("Herramienta analítica para la optimización de tiempos de respuesta post-falla.")
     st.divider()
 
@@ -172,7 +172,7 @@ for linea, grupo in df.groupby("Linea"):
 col_control, col_mapa = st.columns([1, 3])
 
 with col_control:
-    st.header("📋 Datos del Evento")
+    st.header("Datos del Evento")
 
     linea_seleccionada = st.selectbox("Seleccione la Línea:", list(datos_lineas.keys()))
     df_linea = datos_lineas[linea_seleccionada]
