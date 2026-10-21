@@ -307,6 +307,7 @@ if logo_b64:
             <img src="data:image/jpeg;base64,{logo_b64}" alt="Conelsur">
             <div class="titulo-wrap">
                 <h1>Centro de Control: Localizador de Fallas Georreferenciado</h1>
+                <p>Herramienta analítica para la optimización de tiempos de respuesta post-falla</p>
             </div>
             <span class="conelsur-badge">● SEIN en línea</span>
         </div>
@@ -315,7 +316,7 @@ if logo_b64:
     )
 else:
     st.title("⚡ Centro de Control: Localizador de Fallas Georreferenciado")
-    st.markdown("")
+    st.markdown("Herramienta analítica para la optimización de tiempos de respuesta post-falla.")
     st.divider()
 
 # =========================================================
@@ -540,14 +541,6 @@ with col_mapa:
 
     COLOR_LINEA_TENUE = "#AEB8D1"
 
-    def tooltip_torre(nombre_linea, fila):
-        return (
-            f'<div style="font-family:Inter,Arial,sans-serif; font-size:12.5px;">'
-            f'<b>Línea:</b> {nombre_linea}<br>'
-            f'<b>Torre:</b> {fila["Torre"]}<br>'
-            f'Km {fila["Distancia_m"]/1000:.2f}</div>'
-        )
-
     # ---------------------------------------------------
     # Todas las demás líneas, en tono tenue (se dibujan primero
     # para que la línea seleccionada quede resaltada encima)
@@ -564,17 +557,6 @@ with col_mapa:
             opacity=0.7,
             tooltip=f"Línea: {nombre_linea}",
         ).add_to(capa_otras_lineas)
-        for _, fila in grupo_linea.iterrows():
-            folium.CircleMarker(
-                location=[fila["Latitud"], fila["Longitud"]],
-                radius=3,
-                color=COLOR_LINEA_TENUE,
-                weight=1,
-                fill=True,
-                fill_color="white",
-                fill_opacity=1,
-                tooltip=tooltip_torre(nombre_linea, fila),
-            ).add_to(capa_otras_lineas)
     capa_otras_lineas.add_to(m)
 
     # ---------------------------------------------------
@@ -588,18 +570,6 @@ with col_mapa:
         opacity=1,
         tooltip=f"Línea: {linea_seleccionada}",
     ).add_to(m)
-
-    for _, fila in df_linea.iterrows():
-        folium.CircleMarker(
-            location=[fila["Latitud"], fila["Longitud"]],
-            radius=5,
-            color=AZUL_CONELSUR,
-            weight=2,
-            fill=True,
-            fill_color="white",
-            fill_opacity=1,
-            tooltip=tooltip_torre(linea_seleccionada, fila),
-        ).add_to(m)
 
     if mostrar_restricciones and not df_rest_linea.empty:
         capa_restricciones = folium.FeatureGroup(name="Restricciones")
@@ -671,3 +641,9 @@ with col_mapa:
             """,
             unsafe_allow_html=True,
         )
+
+st.markdown(
+    '<div class="conelsur-footer">CONELSUR — Centro de Control de Operaciones de Transmisión · '
+    'Sistema de Localización de Fallas SEIN</div>',
+    unsafe_allow_html=True,
+)
