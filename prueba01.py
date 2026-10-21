@@ -38,17 +38,36 @@ st.set_page_config(
 )
 
 # =========================================================
-# 1. ESTILOS DE MARCA (CSS) — el tema base se fija en
-#    .streamlit/config.toml para que los widgets nativos
-#    (selectbox, number_input, etc.) siempre usen fondo claro
-#    y texto oscuro, sin importar el modo del navegador.
+# 1. ESTILOS DE MARCA (CSS) — el tema base (colores, fuente)
+#    se fija en .streamlit/config.toml para los widgets nativos;
+#    aquí se profundiza con tipografía corporativa (Google Fonts)
+#    y color consistente en pestañas, checkboxes, sliders, etc.
 # =========================================================
+VERDE_CONELSUR_OSCURO = "#00803D"
+AZUL_CONELSUR_CLARO = "#E9EEFA"
+
 st.markdown(
     f"""
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
     <style>
+        html, body, [class*="st-"], .stApp, p, div, span, li, label, input, textarea, select {{
+            font-family: 'Inter', 'Segoe UI', Arial, sans-serif;
+        }}
+        h1, h2, h3, h4, h5, h6,
+        .conelsur-header h1,
+        div[data-testid="stMetricValue"] {{
+            font-family: 'Poppins', 'Segoe UI', Arial, sans-serif;
+            font-weight: 600;
+        }}
+
         .stApp {{
             background-color: {GRIS_CLARO};
         }}
+
+        /* ---- Encabezado ---- */
         .conelsur-header {{
             background-color: #FFFFFF;
             padding: 16px 24px;
@@ -68,21 +87,79 @@ st.markdown(
             color: #555555;
             margin: 0;
             font-size: 14px;
+            font-family: 'Inter', sans-serif;
         }}
+
         h2, h3 {{ color: {AZUL_CONELSUR}; }}
+
+        /* ---- Panel lateral tipo tarjeta ---- */
+        [data-testid="column"]:first-of-type {{
+            background-color: #FFFFFF;
+            border-radius: 12px;
+            padding: 18px 20px 24px 20px;
+            box-shadow: 0 2px 10px rgba(11, 48, 136, 0.08);
+        }}
+
+        /* ---- Botones ---- */
         .stButton > button, .stDownloadButton > button {{
             background-color: {AZUL_CONELSUR};
             color: white;
             border-radius: 6px;
             border: none;
+            font-weight: 500;
         }}
         .stButton > button:hover, .stDownloadButton > button:hover {{
             background-color: {VERDE_CONELSUR};
             color: white;
         }}
+
+        /* ---- Pestañas (st.tabs) ---- */
+        .stTabs [data-baseweb="tab-list"] {{
+            gap: 4px;
+            border-bottom: 2px solid {AZUL_CONELSUR_CLARO};
+        }}
+        .stTabs [data-baseweb="tab"] {{
+            color: {AZUL_CONELSUR};
+            font-weight: 500;
+            padding: 8px 14px;
+        }}
+        .stTabs [aria-selected="true"] {{
+            color: {VERDE_CONELSUR_OSCURO} !important;
+            border-bottom: 3px solid {VERDE_CONELSUR} !important;
+            font-weight: 600;
+        }}
+
+        /* ---- Checkboxes, sliders, radios con acento de marca ---- */
+        input[type="checkbox"] {{ accent-color: {VERDE_CONELSUR}; }}
+        div[data-baseweb="slider"] div[role="slider"] {{
+            background-color: {VERDE_CONELSUR} !important;
+            border-color: {VERDE_CONELSUR} !important;
+        }}
+        div[data-baseweb="slider"] > div > div {{
+            background: {VERDE_CONELSUR} !important;
+        }}
+
+        /* ---- Inputs: borde azul al enfocar ---- */
+        div[data-baseweb="input"]:focus-within,
+        div[data-baseweb="select"]:focus-within,
+        div[data-baseweb="textarea"]:focus-within {{
+            border-color: {AZUL_CONELSUR} !important;
+            box-shadow: 0 0 0 1px {AZUL_CONELSUR} !important;
+        }}
+
+        /* ---- Alertas con acento de marca a la izquierda ---- */
         div[data-testid="stAlertContainer"] {{
             border-left: 6px solid {VERDE_CONELSUR};
+            border-radius: 6px;
         }}
+
+        /* ---- Expanders y subheaders con tono de marca ---- */
+        details > summary {{
+            color: {AZUL_CONELSUR};
+            font-weight: 600;
+        }}
+
+        /* ---- Leyenda de restricciones ---- */
         .leyenda-item {{
             display: inline-flex;
             align-items: center;
@@ -90,12 +167,24 @@ st.markdown(
             margin-right: 14px;
             font-size: 13px;
             color: #222222;
+            font-family: 'Inter', sans-serif;
         }}
         .leyenda-swatch {{
             width: 14px;
             height: 14px;
             border-radius: 3px;
             display: inline-block;
+        }}
+
+        /* ---- Pie de página de marca ---- */
+        .conelsur-footer {{
+            margin-top: 28px;
+            padding: 10px 0;
+            text-align: center;
+            font-size: 12px;
+            color: #8A8A8A;
+            border-top: 1px solid #E0E0E0;
+            font-family: 'Inter', sans-serif;
         }}
     </style>
     """,
@@ -685,3 +774,9 @@ with col_mapa:
             for t in tipos_presentes
         )
         st.markdown(leyenda_html, unsafe_allow_html=True)
+
+st.markdown(
+    '<div class="conelsur-footer">Cuerpo General de Bomberos Voluntarios del Perú — '
+    'datos de referencia · CONELSUR — Centro de Control de Operaciones de Transmisión</div>',
+    unsafe_allow_html=True,
+)
