@@ -299,7 +299,7 @@ with col_control:
 # 6. MAPA
 # =========================================================
 with col_mapa:
-    m = folium.Map(location=[lat_falla, lon_falla], zoom_start=11, tiles="CartoDB positron")
+    m = folium.Map(location=[lat_falla, lon_falla], zoom_start=11)
 
     coord_linea = list(zip(df_linea["Latitud"], df_linea["Longitud"]))
     folium.PolyLine(coord_linea, color=AZUL_CONELSUR, weight=4).add_to(m)
