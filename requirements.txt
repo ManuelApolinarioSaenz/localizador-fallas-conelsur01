@@ -1,6 +1,6 @@
 streamlit
 pandas
-folium
-streamlit-folium
 numpy
-openpyxl
+requests
+pydeck
+Pillow
