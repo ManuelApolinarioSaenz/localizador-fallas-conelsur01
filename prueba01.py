@@ -22,6 +22,7 @@ VERDE_CONELSUR_CLARO = "#E3F7EC"
 GRIS_CLARO = "#F5F7FA"
 GRIS_TEXTO = "#4A4F57"
 GRIS_BORDE = "#E3E6EC"
+COLOR_LINEA_TENUE = "#AEB8D1"
 
 COLORES_TIPO = {
     "Poblado": "#FF8C00",
@@ -372,6 +373,50 @@ def codigos_en_texto(texto):
     return set(int(n) for n in re.findall(r"\d+", str(texto)))
 
 
+def tooltip_torre(nombre_linea, fila):
+    return (
+        f'<div style="font-family:Inter,Arial,sans-serif; font-size:12.5px;">'
+        f'<b>Línea:</b> {nombre_linea}<br>'
+        f'<b>Torre:</b> {fila["Torre"]}<br>'
+        f'Km {fila["Distancia_m"]/1000:.2f}</div>'
+    )
+
+
+@st.cache_resource(show_spinner="Cargando trazado de todas las líneas (una sola vez)...")
+def construir_capa_todas_lineas(_datos_lineas):
+    """Solo los trazos (37 polylines) — liviano, se arma una vez y queda en caché del servidor."""
+    capa = folium.FeatureGroup(name="Todas las líneas")
+    for nombre_linea, grupo_linea in _datos_lineas.items():
+        coords = list(zip(grupo_linea["Latitud"], grupo_linea["Longitud"]))
+        folium.PolyLine(
+            coords,
+            color=COLOR_LINEA_TENUE,
+            weight=2,
+            opacity=0.7,
+            tooltip=f"Línea: {nombre_linea}",
+        ).add_to(capa)
+    return capa
+
+
+@st.cache_resource(show_spinner="Cargando el detalle de torres de todas las líneas (una sola vez)...")
+def construir_capa_todas_las_torres(_datos_lineas):
+    """Las ~2,500 torres con tooltip de línea + nro. de torre — más pesado, por eso es opcional."""
+    capa = folium.FeatureGroup(name="Torres de todas las líneas")
+    for nombre_linea, grupo_linea in _datos_lineas.items():
+        for _, fila in grupo_linea.iterrows():
+            folium.CircleMarker(
+                location=[fila["Latitud"], fila["Longitud"]],
+                radius=3,
+                color=COLOR_LINEA_TENUE,
+                weight=1,
+                fill=True,
+                fill_color="white",
+                fill_opacity=1,
+                tooltip=tooltip_torre(nombre_linea, fila),
+            ).add_to(capa)
+    return capa
+
+
 # =========================================================
 # 4. CARGAR DATOS
 # =========================================================
@@ -537,46 +582,24 @@ with col_mapa:
         unsafe_allow_html=True,
     )
 
+    detalle_todas_torres = st.checkbox(
+        "Mostrar número de torre al pasar el mouse en TODAS las líneas (más lento)",
+        value=False,
+        help="Por defecto solo se dibuja el trazo de las demás líneas (rápido). "
+             "Actívalo si necesitas ver el número de torre de cualquier línea, no solo la seleccionada.",
+    )
+
     m = folium.Map(location=[lat_falla, lon_falla], zoom_start=6)
 
-    COLOR_LINEA_TENUE = "#AEB8D1"
-
-    def tooltip_torre(nombre_linea, fila):
-        return (
-            f'<div style="font-family:Inter,Arial,sans-serif; font-size:12.5px;">'
-            f'<b>Línea:</b> {nombre_linea}<br>'
-            f'<b>Torre:</b> {fila["Torre"]}<br>'
-            f'Km {fila["Distancia_m"]/1000:.2f}</div>'
-        )
-
     # ---------------------------------------------------
-    # Todas las demás líneas, en tono tenue (se dibujan primero
-    # para que la línea seleccionada quede resaltada encima)
+    # Todas las líneas: capas pesadas construidas UNA SOLA VEZ
+    # (cacheadas con st.cache_resource) y reutilizadas en cada
+    # interacción, en vez de reconstruirse en cada rerun.
     # ---------------------------------------------------
-    capa_otras_lineas = folium.FeatureGroup(name="Otras líneas")
-    for nombre_linea, grupo_linea in datos_lineas.items():
-        if nombre_linea == linea_seleccionada:
-            continue
-        coords = list(zip(grupo_linea["Latitud"], grupo_linea["Longitud"]))
-        folium.PolyLine(
-            coords,
-            color=COLOR_LINEA_TENUE,
-            weight=2,
-            opacity=0.7,
-            tooltip=f"Línea: {nombre_linea}",
-        ).add_to(capa_otras_lineas)
-        for _, fila in grupo_linea.iterrows():
-            folium.CircleMarker(
-                location=[fila["Latitud"], fila["Longitud"]],
-                radius=3,
-                color=COLOR_LINEA_TENUE,
-                weight=1,
-                fill=True,
-                fill_color="white",
-                fill_opacity=1,
-                tooltip=tooltip_torre(nombre_linea, fila),
-            ).add_to(capa_otras_lineas)
-    capa_otras_lineas.add_to(m)
+    if detalle_todas_torres:
+        construir_capa_todas_las_torres(datos_lineas).add_to(m)
+    else:
+        construir_capa_todas_lineas(datos_lineas).add_to(m)
 
     # ---------------------------------------------------
     # Línea seleccionada, resaltada en azul de marca
@@ -653,7 +676,7 @@ with col_mapa:
         m.fit_bounds([[todas_lat.min(), todas_lon.min()], [todas_lat.max(), todas_lon.max()]])
 
     st.markdown('<div class="mapa-card">', unsafe_allow_html=True)
-    st_folium(m, width="100%", height=580)
+    st_folium(m, width="100%", height=580, returned_objects=[])
     st.markdown("</div>", unsafe_allow_html=True)
 
     if mostrar_restricciones and not df_rest_linea.empty:
