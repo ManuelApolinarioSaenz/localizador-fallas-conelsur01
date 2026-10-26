@@ -243,14 +243,30 @@ st.markdown(
             background: {VERDE_CONELSUR} !important;
         }}
 
-        /* ---- Inputs nativos: fondo, texto y borde adaptados al modo ---- */
-        div[data-baseweb="input"], div[data-baseweb="select"] > div, div[data-baseweb="textarea"], textarea {{
+        /* ---- Inputs nativos: fondo, texto y borde adaptados al modo ----
+           Anclado a data-testid (estable entre versiones de Streamlit) y a
+           *todos* los descendientes, con !important, para ganarle al tema
+           base fijado en config.toml. */
+        div[data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+        div[data-testid="stNumberInput"] div[data-baseweb="input"],
+        div[data-testid="stTextInput"] div[data-baseweb="input"],
+        div[data-testid="stTextArea"] div[data-baseweb="textarea"] {{
             background-color: {COLOR_FONDO_TARJETA} !important;
-            color: {COLOR_TEXTO} !important;
             border-color: {COLOR_BORDE} !important;
         }}
-        div[data-baseweb="input"] input, div[data-baseweb="select"] span {{
+        div[data-testid="stSelectbox"] *,
+        div[data-testid="stNumberInput"] input,
+        div[data-testid="stTextInput"] input,
+        div[data-testid="stTextArea"] textarea {{
+            background-color: transparent !important;
             color: {COLOR_TEXTO} !important;
+            -webkit-text-fill-color: {COLOR_TEXTO} !important;
+        }}
+        div[data-testid="stTextArea"] textarea {{
+            background-color: {COLOR_FONDO_TARJETA} !important;
+        }}
+        div[data-testid="stSelectbox"] svg {{
+            fill: {COLOR_TEXTO} !important;
         }}
         div[data-baseweb="input"]:focus-within,
         div[data-baseweb="select"]:focus-within,
@@ -258,11 +274,14 @@ st.markdown(
             border-color: {AZUL_CONELSUR} !important;
             box-shadow: 0 0 0 1px {AZUL_CONELSUR} !important;
         }}
-        ul[data-baseweb="menu"] {{
+        ul[data-baseweb="menu"], div[data-baseweb="popover"] ul {{
             background-color: {COLOR_FONDO_TARJETA} !important;
         }}
-        ul[data-baseweb="menu"] li {{
+        ul[data-baseweb="menu"] li, ul[data-baseweb="menu"] li * {{
             color: {COLOR_TEXTO} !important;
+        }}
+        ul[data-baseweb="menu"] li:hover {{
+            background-color: {COLOR_BORDE} !important;
         }}
 
         /* ---- Alertas con acento de marca ---- */
@@ -355,13 +374,18 @@ def cargar_logo_base64(ruta: str) -> str:
     except FileNotFoundError:
         return ""
 
-logo_b64 = cargar_logo_base64("conelsur_logo.jpg")
+logo_b64 = cargar_logo_base64("conelsur_logo_transparente.png")
+logo_mime = "image/png"
+if not logo_b64:
+    # Compatibilidad hacia atrás por si el repo aún no tiene la versión transparente
+    logo_b64 = cargar_logo_base64("conelsur_logo.jpg")
+    logo_mime = "image/jpeg"
 
 if logo_b64:
     st.markdown(
         f"""
         <div class="conelsur-header">
-            <img src="data:image/jpeg;base64,{logo_b64}" alt="Conelsur">
+            <img src="data:{logo_mime};base64,{logo_b64}" alt="Conelsur">
             <div class="titulo-wrap">
                 <h1>Centro de Control: Localizador de Fallas Georreferenciado</h1>
                 <p>Herramienta analítica para la optimización de tiempos de respuesta post-falla</p>
