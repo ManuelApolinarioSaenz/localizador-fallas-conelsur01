@@ -11,6 +11,8 @@ import pandas as pd
 import numpy as np
 import requests
 
+from cargar_kmz import cargar_lineas_y_subestaciones_kmz, COLORES_POR_VOLTAJE
+
 # =========================================================
 # 0. COLORES DE MARCA CONELSUR
 # =========================================================
@@ -348,6 +350,19 @@ st.markdown(
             border-radius: 4px;
             display: inline-block;
         }}
+        .leyenda-linea-swatch {{
+            width: 24px;
+            height: 0;
+            border-top-width: 3px;
+            border-top-style: solid;
+            display: inline-block;
+        }}
+        .leyenda-punto-swatch {{
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+        }}
 
         /* ---- Pie de página de marca ---- */
         .conelsur-footer {{
@@ -572,20 +587,32 @@ def construir_subestaciones(datos_lineas):
 
 
 # =========================================================
-# 4. CARGAR DATOS
+# 4. CARGAR DATOS — KMZ reales si están disponibles (carpeta kmz/),
+#    con el Excel consolidado_total.xlsx como respaldo mientras se
+#    termina de subir el set completo de archivos KMZ al repositorio.
 # =========================================================
-df = pd.read_excel("consolidado_total.xlsx")
-df.columns = df.columns.str.strip()
-df["Latitud"] = pd.to_numeric(df["Latitud"], errors="coerce")
-df["Longitud"] = pd.to_numeric(df["Longitud"], errors="coerce")
-df["Torre"] = df["Torre"].astype(str).str.strip()
+filas_descartadas = 0
+subestaciones_voltaje = {}  # nombre -> kV (None si no se pudo determinar)
 
-# Una sola torre con coordenada vacía o mal escrita rompe el trazado en PyDeck
-# (genera los "abanicos" triangulares gigantes), así que se descartan aquí,
-# en el origen, antes de construir líneas, distancias o capas del mapa.
-filas_antes = len(df)
-df = df.dropna(subset=["Latitud", "Longitud"]).reset_index(drop=True)
-filas_descartadas = filas_antes - len(df)
+if Path("kmz").is_dir() and any(Path("kmz").glob("*.kmz")):
+    df, subestaciones_kmz = cargar_lineas_y_subestaciones_kmz("kmz")
+    subestaciones = {nombre: (lat, lon) for nombre, (lat, lon, kv) in subestaciones_kmz.items()}
+    subestaciones_voltaje = {nombre: kv for nombre, (lat, lon, kv) in subestaciones_kmz.items()}
+    fuente_datos = "kmz"
+else:
+    df = pd.read_excel("consolidado_total.xlsx")
+    df.columns = df.columns.str.strip()
+    df["Latitud"] = pd.to_numeric(df["Latitud"], errors="coerce")
+    df["Longitud"] = pd.to_numeric(df["Longitud"], errors="coerce")
+    df["Torre"] = df["Torre"].astype(str).str.strip()
+
+    # Una sola torre con coordenada vacía o mal escrita rompe el trazado en PyDeck
+    # (genera los "abanicos" triangulares gigantes), así que se descartan aquí,
+    # en el origen, antes de construir líneas, distancias o capas del mapa.
+    filas_antes = len(df)
+    df = df.dropna(subset=["Latitud", "Longitud"]).reset_index(drop=True)
+    filas_descartadas = filas_antes - len(df)
+    fuente_datos = "excel"
 
 datos_lineas = {}
 for linea, grupo in df.groupby("Linea"):
@@ -599,9 +626,10 @@ for linea, grupo in df.groupby("Linea"):
         grupo.loc[i, "Distancia_m"] = grupo.loc[i - 1, "Distancia_m"] + d
     datos_lineas[linea] = grupo
 
-# Subestaciones (origen/destino de cada línea), ubicadas con la primera
-# y última torre registrada de la línea correspondiente.
-subestaciones = construir_subestaciones(datos_lineas)
+# Si se cargó desde el Excel (sin KMZ), las subestaciones se siguen
+# aproximando con el diccionario de origen/destino, como antes.
+if fuente_datos == "excel":
+    subestaciones = construir_subestaciones(datos_lineas)
 
 # Restricciones (zonas pobladas, cruces de carretera/río, etc.)
 try:
@@ -654,13 +682,17 @@ with col_control:
     if mostrar_incendios:
         try:
             df_bomberos = cargar_emergencias_bomberos()
-            df_incendios = df_bomberos[
-                df_bomberos["tipo"].str.contains("INCENDIO", case=False, na=False)
-                & (df_bomberos["estado"].str.upper() == "ATENDIENDO")
-            ].copy()
-            st.caption(f"{len(df_incendios)} incendio(s) activo(s) en el Perú (actualizado cada ~90 s).")
+            df_incendios = df_bomberos[df_bomberos["tipo"].str.contains("INCENDIO", case=False, na=False)].copy()
+            n_atencion = (df_incendios["estado"].str.upper() == "ATENDIENDO").sum()
+            n_cerrado = (df_incendios["estado"].str.upper() == "CERRADO").sum()
+            st.caption(
+                f"🔴 {n_atencion} en atención · 🟠 {n_cerrado} cerrado(s) "
+                "(incluye todo el Perú, actualizado cada ~90 s)."
+            )
 
-            con_coords = df_incendios.dropna(subset=["lat", "lon"])
+            con_coords = df_incendios[
+                (df_incendios["estado"].str.upper() == "ATENDIENDO")
+            ].dropna(subset=["lat", "lon"])
             cercanos = []
             for _, r in con_coords.iterrows():
                 dist_m, torre = punto_mas_cercano_en_linea(df_linea, r["lat"], r["lon"])
@@ -670,7 +702,7 @@ with col_control:
                         [df_incendios_cercanos, pd.DataFrame([r])], ignore_index=True
                     )
             if cercanos:
-                st.error(f"⚠️ {len(cercanos)} incendio(s) a menos de 500 m de **{linea_seleccionada}**")
+                st.error(f"⚠️ {len(cercanos)} incendio(s) EN ATENCIÓN a menos de 500 m de **{linea_seleccionada}**")
                 for r, dist_m, torre in cercanos:
                     st.write(
                         f"**{r['direccion']}**  \n"
@@ -910,7 +942,11 @@ with col_mapa:
         datos_subestaciones = [
             {
                 "position": [lon_se, lat_se],
-                "nombre": nombre_se,
+                "nombre": (
+                    f"{nombre_se} · {subestaciones_voltaje.get(nombre_se)} kV"
+                    if subestaciones_voltaje.get(nombre_se)
+                    else nombre_se
+                ),
                 "icono": icono_subestacion,
                 "info": "",
             }
@@ -949,11 +985,14 @@ with col_mapa:
     # Incendios activos (Bomberos Perú)
     # ---------------------------------------------------
     if mostrar_incendios and not df_incendios.empty:
+        COLOR_INCENDIO_ATENCION = [214, 40, 40, 255]   # rojo
+        COLOR_INCENDIO_CERRADO = [255, 152, 0, 255]    # naranja
         datos_incendios = [
             {
                 "position": [r["lon"], r["lat"]],
                 "nombre": f"🔥 {r['tipo']}",
-                "info": f"<br/>{r['direccion']}<br/>{r['fecha_hora']}<br/>Máquinas: {r['maquinas'] or '—'}",
+                "info": f"<br/>Estado: {r['estado']}<br/>{r['direccion']}<br/>{r['fecha_hora']}<br/>Máquinas: {r['maquinas'] or '—'}",
+                "color": COLOR_INCENDIO_ATENCION if r["estado"].upper() == "ATENDIENDO" else COLOR_INCENDIO_CERRADO,
             }
             for _, r in df_incendios.dropna(subset=["lat", "lon"]).iterrows()
         ]
@@ -961,7 +1000,7 @@ with col_mapa:
             capas_pydeck.append(
                 pdk.Layer(
                     "ScatterplotLayer",
-                    data=datos_incendios,
+                    data=[d for d in datos_incendios if d["color"] == COLOR_INCENDIO_ATENCION],
                     get_position="position",
                     get_fill_color=[255, 87, 34, 70],
                     get_radius=350,
@@ -974,7 +1013,7 @@ with col_mapa:
                     "ScatterplotLayer",
                     data=datos_incendios,
                     get_position="position",
-                    get_fill_color=[214, 40, 40, 255],
+                    get_fill_color="color",
                     get_line_color=[255, 255, 255, 255],
                     line_width_min_pixels=1.5,
                     stroked=True,
@@ -1068,6 +1107,30 @@ with col_mapa:
             """,
             unsafe_allow_html=True,
         )
+
+    # ---------------------------------------------------
+    # Leyenda de niveles de tensión, tipo de línea e incendios
+    # Nota: el color por voltaje de cada LÍNEA aún no se aplica en el mapa
+    # (el KMZ de la línea no trae el kV) — esta leyenda es la referencia
+    # para cuando se confirme esa regla. El voltaje de las SUBESTACIONES
+    # sí viene confirmado (nombre del archivo) y ya se ve en su etiqueta.
+    # ---------------------------------------------------
+    st.markdown(
+        f"""
+        <div class="leyenda-card" style="margin-top: 10px;">
+            <div class="leyenda-titulo">Leyenda</div>
+            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[220]};"></span>Activo de Transmisión de 220KV</span>
+            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[138]};"></span>Activo de Transmisión de 138KV</span>
+            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[69]};"></span>Activo de Transmisión de 69KV</span>
+            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[60]};"></span>Activo de Transmisión de 60KV / 50KV</span>
+            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:#111111; border-top-style:solid;"></span>Línea Aérea</span>
+            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:#111111; border-top-style:dashed;"></span>Línea Subterránea</span>
+            <span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#D62828;"></span>Incendio en Atención</span>
+            <span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#FF9800;"></span>Incendio Cerrado</span>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
 st.markdown(
     '<div class="conelsur-footer">CONELSUR — Centro de Control de Operaciones de Transmisión · '
