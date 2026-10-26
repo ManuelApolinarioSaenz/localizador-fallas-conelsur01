@@ -460,6 +460,46 @@ def hex_a_rgb(color_hex, alpha=255):
     return [r, g, b, alpha]
 
 
+URL_EMERGENCIAS_BOMBEROS = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1n_YelAX4D_mFQbXLduWTpjFLfzYOElzSYM8FiiWBhto/export?format=csv"
+)
+
+
+@st.cache_data(ttl=90, show_spinner="Consultando emergencias de Bomberos Perú...")
+def cargar_emergencias_bomberos():
+    """Hoja de Google Sheets con el registro de emergencias de Bomberos Perú
+    (actualizada automáticamente por un tercero), sin necesidad de pegar HTML
+    a mano. Se cachea 90 s para no golpear la hoja en cada interacción."""
+    df_em = pd.read_csv(URL_EMERGENCIAS_BOMBEROS)
+    df_em = df_em.rename(
+        columns={
+            "Nro Parte": "parte",
+            "Fecha Hora": "fecha_hora",
+            "Dirección / Distrito": "direccion",
+            "Tipo": "tipo",
+            "Estado": "estado",
+            "Máquina": "maquinas",
+            "Coordenada": "coordenada",
+        }
+    )
+
+    def _extraer_lat_lon(valor):
+        try:
+            lat_str, lon_str = str(valor).split(",")
+            lat, lon = float(lat_str), float(lon_str)
+        except (ValueError, AttributeError):
+            return pd.Series([None, None])
+        if lat == 0 and lon == 0:
+            return pd.Series([None, None])
+        return pd.Series([lat, lon])
+
+    df_em[["lat", "lon"]] = df_em["coordenada"].apply(_extraer_lat_lon)
+    df_em["maquinas"] = df_em["maquinas"].fillna("").astype(str)
+    df_em["direccion"] = df_em["direccion"].fillna("").astype(str)
+    return df_em[["parte", "fecha_hora", "direccion", "tipo", "estado", "maquinas", "lat", "lon"]]
+
+
 @st.cache_resource(show_spinner=False)
 def generar_icono_cuadrado_b64(lado_px=28):
     """Genera un cuadrado negro con borde blanco como PNG en base64, para el IconLayer de subestaciones."""
@@ -607,6 +647,37 @@ with col_control:
         st.warning("No se encontró restricciones_conelsur.csv en el repositorio.")
 
     mostrar_subestaciones = st.checkbox("Mostrar subestaciones (cuadrados negros)", value=True)
+
+    mostrar_incendios = st.checkbox("🔥 Mostrar incendios activos (Bomberos Perú)", value=False)
+    df_incendios_cercanos = pd.DataFrame()
+    df_incendios = pd.DataFrame()
+    if mostrar_incendios:
+        try:
+            df_bomberos = cargar_emergencias_bomberos()
+            df_incendios = df_bomberos[
+                df_bomberos["tipo"].str.contains("INCENDIO", case=False, na=False)
+                & (df_bomberos["estado"].str.upper() == "ATENDIENDO")
+            ].copy()
+            st.caption(f"{len(df_incendios)} incendio(s) activo(s) en el Perú (actualizado cada ~90 s).")
+
+            con_coords = df_incendios.dropna(subset=["lat", "lon"])
+            cercanos = []
+            for _, r in con_coords.iterrows():
+                dist_m, torre = punto_mas_cercano_en_linea(df_linea, r["lat"], r["lon"])
+                if dist_m < 500:
+                    cercanos.append((r, dist_m, torre))
+                    df_incendios_cercanos = pd.concat(
+                        [df_incendios_cercanos, pd.DataFrame([r])], ignore_index=True
+                    )
+            if cercanos:
+                st.error(f"⚠️ {len(cercanos)} incendio(s) a menos de 500 m de **{linea_seleccionada}**")
+                for r, dist_m, torre in cercanos:
+                    st.write(
+                        f"**{r['direccion']}**  \n"
+                        f"A {dist_m:.0f} m de la torre {torre['Torre']} · {r['fecha_hora']}"
+                    )
+        except Exception as e:
+            st.warning(f"No se pudo consultar la hoja de emergencias de Bomberos: {e}")
 
     # ---------------------------------------------------
     # Ubicación de la falla
@@ -873,6 +944,45 @@ with col_mapa:
                 font_family="Inter, Arial, sans-serif",
             )
         )
+
+    # ---------------------------------------------------
+    # Incendios activos (Bomberos Perú)
+    # ---------------------------------------------------
+    if mostrar_incendios and not df_incendios.empty:
+        datos_incendios = [
+            {
+                "position": [r["lon"], r["lat"]],
+                "nombre": f"🔥 {r['tipo']}",
+                "info": f"<br/>{r['direccion']}<br/>{r['fecha_hora']}<br/>Máquinas: {r['maquinas'] or '—'}",
+            }
+            for _, r in df_incendios.dropna(subset=["lat", "lon"]).iterrows()
+        ]
+        if datos_incendios:
+            capas_pydeck.append(
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=datos_incendios,
+                    get_position="position",
+                    get_fill_color=[255, 87, 34, 70],
+                    get_radius=350,
+                    radius_min_pixels=14,
+                    pickable=False,
+                )
+            )
+            capas_pydeck.append(
+                pdk.Layer(
+                    "ScatterplotLayer",
+                    data=datos_incendios,
+                    get_position="position",
+                    get_fill_color=[214, 40, 40, 255],
+                    get_line_color=[255, 255, 255, 255],
+                    line_width_min_pixels=1.5,
+                    stroked=True,
+                    get_radius=120,
+                    radius_min_pixels=6,
+                    pickable=True,
+                )
+            )
 
     # ---------------------------------------------------
     # Marcador de la falla estimada
