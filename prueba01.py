@@ -593,9 +593,10 @@ def construir_subestaciones(datos_lineas):
 # =========================================================
 filas_descartadas = 0
 subestaciones_voltaje = {}  # nombre -> kV (None si no se pudo determinar)
+info_lineas = {}  # nombre_linea -> {"voltaje_kv": int|None, "tipo": "Aérea"|"Subterránea"|None}
 
 if Path("kmz").is_dir() and any(Path("kmz").glob("*.kmz")):
-    df, subestaciones_kmz = cargar_lineas_y_subestaciones_kmz("kmz")
+    df, subestaciones_kmz, info_lineas = cargar_lineas_y_subestaciones_kmz("kmz")
     subestaciones = {nombre: (lat, lon) for nombre, (lat, lon, kv) in subestaciones_kmz.items()}
     subestaciones_voltaje = {nombre: kv for nombre, (lat, lon, kv) in subestaciones_kmz.items()}
     fuente_datos = "kmz"
@@ -657,6 +658,10 @@ with col_control:
     linea_seleccionada = st.selectbox("Seleccione la Línea:", list(datos_lineas.keys()))
     df_linea = datos_lineas[linea_seleccionada]
 
+    _info_sel = info_lineas.get(linea_seleccionada, {})
+    if _info_sel.get("voltaje_kv"):
+        st.caption(f"⚡ {_info_sel['voltaje_kv']} kV · {_info_sel.get('tipo') or '—'}")
+
     distancia_max_km = df_linea["Distancia_m"].max() / 1000
 
     distancia_falla_km = st.number_input(
@@ -716,10 +721,18 @@ with col_control:
     # ---------------------------------------------------
     lat_falla, lon_falla = punto_en_distancia(df_linea, distancia_falla_m)
 
+    if len(df_linea) < 2:
+        st.error(
+            f"⚠️ '{linea_seleccionada}' solo tiene {len(df_linea)} punto(s) válido(s) — "
+            "revisa ese KMZ, no se puede calcular una falla sobre un solo punto."
+        )
+        st.stop()
+
     df_antes = df_linea[df_linea["Distancia_m"] <= distancia_falla_m]
     df_despues = df_linea[df_linea["Distancia_m"] > distancia_falla_m]
     if df_despues.empty:
-        t_anterior, t_posterior = df_antes.iloc[-2], df_antes.iloc[-1]
+        t_anterior = df_antes.iloc[-2] if len(df_antes) >= 2 else df_linea.iloc[-2]
+        t_posterior = df_antes.iloc[-1] if not df_antes.empty else df_linea.iloc[-1]
     else:
         t_anterior = df_antes.iloc[-1] if not df_antes.empty else df_linea.iloc[0]
         t_posterior = df_despues.iloc[0]
@@ -821,6 +834,15 @@ with col_mapa:
     COLOR_LINEA_TENUE = "#AEB8D1"
     capas_pydeck = []
 
+    def _info_voltaje_linea(nombre_linea):
+        datos = info_lineas.get(nombre_linea, {})
+        kv, tipo = datos.get("voltaje_kv"), datos.get("tipo")
+        if kv and tipo:
+            return f"<br/>{kv} kV · {tipo}"
+        if kv:
+            return f"<br/>{kv} kV"
+        return ""
+
     # ---------------------------------------------------
     # Todas las demás líneas, en tono tenue
     # ---------------------------------------------------
@@ -828,7 +850,7 @@ with col_mapa:
         {
             "path": grupo_linea[["Longitud", "Latitud"]].values.tolist(),
             "nombre": f"Línea: {nombre_linea}",
-            "info": "",
+            "info": _info_voltaje_linea(nombre_linea),
         }
         for nombre_linea, grupo_linea in datos_lineas.items()
         if nombre_linea != linea_seleccionada
@@ -854,7 +876,7 @@ with col_mapa:
         {
             "path": df_linea[["Longitud", "Latitud"]].values.tolist(),
             "nombre": f"Línea: {linea_seleccionada}",
-            "info": "",
+            "info": _info_voltaje_linea(linea_seleccionada),
         }
     ]
     capas_pydeck.append(
