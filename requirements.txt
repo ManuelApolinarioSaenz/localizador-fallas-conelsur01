@@ -4,3 +4,4 @@ numpy
 requests
 pydeck
 Pillow
+openpyxl
