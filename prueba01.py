@@ -45,11 +45,50 @@ st.set_page_config(
 )
 
 # =========================================================
+# 0.1 MODO OSCURO — interruptor arriba a la derecha
+# =========================================================
+_col_vacio, _col_switch = st.columns([7, 1])
+with _col_switch:
+    modo_oscuro = st.toggle("🌙 Oscuro", value=False, key="modo_oscuro")
+
+# Tokens de color que cambian según el modo. Los colores de marca
+# (AZUL_CONELSUR, VERDE_CONELSUR) se mantienen fijos — se usan también
+# en el mapa — pero el resto de la interfaz (fondos, texto, tarjetas)
+# se adapta para mantener buen contraste en modo oscuro.
+if modo_oscuro:
+    COLOR_FONDO_PAGINA = "#0E1117"
+    COLOR_FONDO_TARJETA = "#1B1E24"
+    COLOR_TEXTO = "#D8DBE0"
+    COLOR_TEXTO_SECUNDARIO = "#9AA0A8"
+    COLOR_BORDE = "#2E333B"
+    COLOR_TITULO = "#9DB4F5"
+    COLOR_TAB_BORDE = "#2A3550"
+    COLOR_UBICACION_BG = "#11291B"
+    COLOR_UBICACION_TEXTO_TITULO = VERDE_CONELSUR
+    COLOR_BADGE_BG = "#12341F"
+    COLOR_BADGE_TEXTO = VERDE_CONELSUR
+    COLOR_SOMBRA = "rgba(0, 0, 0, 0.45)"
+else:
+    COLOR_FONDO_PAGINA = GRIS_CLARO
+    COLOR_FONDO_TARJETA = "#FFFFFF"
+    COLOR_TEXTO = GRIS_TEXTO
+    COLOR_TEXTO_SECUNDARIO = "#555555"
+    COLOR_BORDE = GRIS_BORDE
+    COLOR_TITULO = AZUL_CONELSUR
+    COLOR_TAB_BORDE = AZUL_CONELSUR_CLARO
+    COLOR_UBICACION_BG = VERDE_CONELSUR_CLARO
+    COLOR_UBICACION_TEXTO_TITULO = VERDE_CONELSUR_OSCURO
+    COLOR_BADGE_BG = VERDE_CONELSUR_CLARO
+    COLOR_BADGE_TEXTO = VERDE_CONELSUR_OSCURO
+    COLOR_SOMBRA = "rgba(11, 48, 136, 0.08)"
+
+# =========================================================
 # 1. ESTILOS DE MARCA (CSS) — el tema base (colores, fuente)
 #    se fija en .streamlit/config.toml para los widgets nativos;
 #    aquí se profundiza con tipografía corporativa (Google Fonts),
 #    un panel lateral tipo tarjeta, tarjetas de indicadores (KPI),
-#    y color consistente en pestañas, botones, inputs y alertas.
+#    color consistente en pestañas, botones, inputs y alertas,
+#    y los tokens de color de arriba para alternar modo claro/oscuro.
 # =========================================================
 st.markdown(
     f"""
@@ -69,7 +108,10 @@ st.markdown(
         }}
 
         .stApp {{
-            background-color: {GRIS_CLARO};
+            background-color: {COLOR_FONDO_PAGINA};
+        }}
+        html, body, [class*="st-"], .stApp, p, div, span, li, label {{
+            color: {COLOR_TEXTO};
         }}
 
         /* ---- Barra superior con degradado de marca ---- */
@@ -83,33 +125,33 @@ st.markdown(
 
         /* ---- Encabezado ---- */
         .conelsur-header {{
-            background-color: #FFFFFF;
+            background-color: {COLOR_FONDO_TARJETA};
             padding: 18px 28px;
             display: flex;
             align-items: center;
             gap: 22px;
             margin-bottom: 20px;
             border-radius: 0 0 12px 12px;
-            box-shadow: 0 3px 14px rgba(11, 48, 136, 0.10);
+            box-shadow: 0 3px 14px {COLOR_SOMBRA};
         }}
         .conelsur-header img {{ height: 46px; }}
         .conelsur-header .titulo-wrap {{ display: flex; flex-direction: column; gap: 2px; }}
         .conelsur-header h1 {{
-            color: {AZUL_CONELSUR};
+            color: {COLOR_TITULO};
             font-size: 24px;
             margin: 0;
             letter-spacing: -0.2px;
         }}
         .conelsur-header p {{
-            color: {GRIS_TEXTO};
+            color: {COLOR_TEXTO_SECUNDARIO};
             margin: 0;
             font-size: 13.5px;
             font-family: 'Inter', sans-serif;
         }}
         .conelsur-badge {{
             margin-left: auto;
-            background-color: {VERDE_CONELSUR_CLARO};
-            color: {VERDE_CONELSUR_OSCURO};
+            background-color: {COLOR_BADGE_BG};
+            color: {COLOR_BADGE_TEXTO};
             font-size: 12px;
             font-weight: 600;
             padding: 5px 12px;
@@ -117,15 +159,15 @@ st.markdown(
             white-space: nowrap;
         }}
 
-        h2, h3 {{ color: {AZUL_CONELSUR}; }}
+        h1, h2, h3 {{ color: {COLOR_TITULO}; }}
 
         /* ---- Panel lateral tipo tarjeta ---- */
         [data-testid="column"]:first-of-type {{
-            background-color: #FFFFFF;
+            background-color: {COLOR_FONDO_TARJETA};
             border-radius: 14px;
             padding: 20px 22px 26px 22px;
-            box-shadow: 0 2px 12px rgba(11, 48, 136, 0.08);
-            border: 1px solid {GRIS_BORDE};
+            box-shadow: 0 2px 12px {COLOR_SOMBRA};
+            border: 1px solid {COLOR_BORDE};
         }}
 
         /* ---- Tarjetas de indicadores (KPI) ---- */
@@ -133,32 +175,32 @@ st.markdown(
         .kpi-card {{
             flex: 1;
             min-width: 140px;
-            background-color: #FFFFFF;
+            background-color: {COLOR_FONDO_TARJETA};
             border-radius: 12px;
             padding: 14px 16px;
-            box-shadow: 0 2px 10px rgba(11, 48, 136, 0.07);
+            box-shadow: 0 2px 10px {COLOR_SOMBRA};
             border-top: 3px solid {VERDE_CONELSUR};
         }}
         .kpi-card .kpi-valor {{
             font-family: 'Poppins', sans-serif;
             font-size: 24px;
             font-weight: 700;
-            color: {AZUL_CONELSUR};
+            color: {COLOR_TITULO};
             line-height: 1.1;
         }}
         .kpi-card .kpi-etiqueta {{
             font-size: 12.5px;
-            color: {GRIS_TEXTO};
+            color: {COLOR_TEXTO};
             margin-top: 4px;
         }}
 
         /* ---- Contenedor del mapa ---- */
         .mapa-card {{
-            background-color: #FFFFFF;
+            background-color: {COLOR_FONDO_TARJETA};
             border-radius: 14px;
             padding: 10px;
-            box-shadow: 0 2px 12px rgba(11, 48, 136, 0.08);
-            border: 1px solid {GRIS_BORDE};
+            box-shadow: 0 2px 12px {COLOR_SOMBRA};
+            border: 1px solid {COLOR_BORDE};
             margin-bottom: 14px;
         }}
 
@@ -178,15 +220,15 @@ st.markdown(
         /* ---- Pestañas (st.tabs) ---- */
         .stTabs [data-baseweb="tab-list"] {{
             gap: 4px;
-            border-bottom: 2px solid {AZUL_CONELSUR_CLARO};
+            border-bottom: 2px solid {COLOR_TAB_BORDE};
         }}
         .stTabs [data-baseweb="tab"] {{
-            color: {AZUL_CONELSUR};
+            color: {COLOR_TITULO};
             font-weight: 500;
             padding: 8px 14px;
         }}
         .stTabs [aria-selected="true"] {{
-            color: {VERDE_CONELSUR_OSCURO} !important;
+            color: {VERDE_CONELSUR} !important;
             border-bottom: 3px solid {VERDE_CONELSUR} !important;
             font-weight: 600;
         }}
@@ -201,12 +243,26 @@ st.markdown(
             background: {VERDE_CONELSUR} !important;
         }}
 
-        /* ---- Inputs: borde azul al enfocar ---- */
+        /* ---- Inputs nativos: fondo, texto y borde adaptados al modo ---- */
+        div[data-baseweb="input"], div[data-baseweb="select"] > div, div[data-baseweb="textarea"], textarea {{
+            background-color: {COLOR_FONDO_TARJETA} !important;
+            color: {COLOR_TEXTO} !important;
+            border-color: {COLOR_BORDE} !important;
+        }}
+        div[data-baseweb="input"] input, div[data-baseweb="select"] span {{
+            color: {COLOR_TEXTO} !important;
+        }}
         div[data-baseweb="input"]:focus-within,
         div[data-baseweb="select"]:focus-within,
         div[data-baseweb="textarea"]:focus-within {{
             border-color: {AZUL_CONELSUR} !important;
             box-shadow: 0 0 0 1px {AZUL_CONELSUR} !important;
+        }}
+        ul[data-baseweb="menu"] {{
+            background-color: {COLOR_FONDO_TARJETA} !important;
+        }}
+        ul[data-baseweb="menu"] li {{
+            color: {COLOR_TEXTO} !important;
         }}
 
         /* ---- Alertas con acento de marca ---- */
@@ -217,42 +273,42 @@ st.markdown(
 
         /* ---- Tarjeta de ubicación estimada ---- */
         .ubicacion-card {{
-            background-color: {VERDE_CONELSUR_CLARO};
+            background-color: {COLOR_UBICACION_BG};
             border: 1px solid {VERDE_CONELSUR};
             border-radius: 10px;
             padding: 14px 16px;
             margin: 10px 0 16px 0;
         }}
         .ubicacion-card .titulo {{
-            color: {VERDE_CONELSUR_OSCURO};
+            color: {COLOR_UBICACION_TEXTO_TITULO};
             font-weight: 600;
             font-size: 14.5px;
             margin-bottom: 4px;
         }}
         .ubicacion-card .detalle {{
-            color: {GRIS_TEXTO};
+            color: {COLOR_TEXTO};
             font-size: 13.5px;
             line-height: 1.5;
         }}
 
         /* ---- Expanders y subheaders ---- */
         details > summary {{
-            color: {AZUL_CONELSUR};
+            color: {COLOR_TITULO};
             font-weight: 600;
         }}
 
         /* ---- Leyenda de restricciones ---- */
         .leyenda-card {{
-            background-color: #FFFFFF;
+            background-color: {COLOR_FONDO_TARJETA};
             border-radius: 10px;
             padding: 12px 16px;
-            box-shadow: 0 2px 10px rgba(11, 48, 136, 0.06);
-            border: 1px solid {GRIS_BORDE};
+            box-shadow: 0 2px 10px {COLOR_SOMBRA};
+            border: 1px solid {COLOR_BORDE};
         }}
         .leyenda-titulo {{
             font-size: 12.5px;
             font-weight: 600;
-            color: {AZUL_CONELSUR};
+            color: {COLOR_TITULO};
             text-transform: uppercase;
             letter-spacing: 0.4px;
             margin-bottom: 8px;
@@ -264,7 +320,7 @@ st.markdown(
             margin-right: 16px;
             margin-bottom: 4px;
             font-size: 13px;
-            color: {GRIS_TEXTO};
+            color: {COLOR_TEXTO};
             font-family: 'Inter', sans-serif;
         }}
         .leyenda-swatch {{
@@ -280,8 +336,8 @@ st.markdown(
             padding: 12px 0;
             text-align: center;
             font-size: 12px;
-            color: #9AA0A8;
-            border-top: 1px solid {GRIS_BORDE};
+            color: {COLOR_TEXTO_SECUNDARIO};
+            border-top: 1px solid {COLOR_BORDE};
             font-family: 'Inter', sans-serif;
         }}
     </style>
@@ -308,7 +364,7 @@ if logo_b64:
             <img src="data:image/jpeg;base64,{logo_b64}" alt="Conelsur">
             <div class="titulo-wrap">
                 <h1>Centro de Control: Localizador de Fallas Georreferenciado</h1>
-                <p> </p>
+                <p>Herramienta analítica para la optimización de tiempos de respuesta post-falla</p>
             </div>
             <span class="conelsur-badge">● SEIN en línea</span>
         </div>
@@ -317,7 +373,7 @@ if logo_b64:
     )
 else:
     st.title("⚡ Centro de Control: Localizador de Fallas Georreferenciado")
-    st.markdown("")
+    st.markdown("Herramienta analítica para la optimización de tiempos de respuesta post-falla.")
     st.divider()
 
 # =========================================================
@@ -846,7 +902,7 @@ with col_mapa:
         layers=capas_pydeck,
         initial_view_state=vista_inicial,
         map_provider="carto",
-        map_style="light",
+        map_style="dark" if modo_oscuro else "light",
         tooltip={
             "html": "<b>{nombre}</b>{info}",
             "style": {
@@ -878,3 +934,9 @@ with col_mapa:
             """,
             unsafe_allow_html=True,
         )
+
+st.markdown(
+    '<div class="conelsur-footer">CONELSUR — Centro de Control de Operaciones de Transmisión · '
+    'Sistema de Localización de Fallas SEIN</div>',
+    unsafe_allow_html=True,
+)
