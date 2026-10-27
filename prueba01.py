@@ -40,6 +40,15 @@ COLORES_TIPO = {
     "Otro": "#808080",
 }
 
+# Colores de referencia por nivel de tensión (kV) para la leyenda
+COLORES_POR_VOLTAJE = {
+    220: "#D62828",
+    138: "#1E5BC6",
+    69: "#00A651",
+    60: "#8A2BE2",
+}
+
+
 st.set_page_config(
     layout="wide",
     page_title="Sistema de Localización de Fallas - SEIN",
