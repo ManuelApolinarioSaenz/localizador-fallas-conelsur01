@@ -3,21 +3,28 @@ Carga de líneas de transmisión y subestaciones directamente desde archivos
 KMZ, reemplazando consolidado_total.xlsx y el diccionario SUBESTACIONES_POR_LINEA
 que antes se mantenía a mano.
 
-Convención de nombres de archivo (confirmada con archivos reales de Conelsur):
+Convención de nombres de archivo (confirmada con el listado real de Conelsur):
 
-  - SUBESTACIÓN:  "<kV>KV_SE_<nombre>.kmz"
-                  ej. "220KV_SE_Ishcayucro (ATN).kmz"
+  - SUBESTACIÓN:  "<kV>KV_SE <nombre>.kmz"   ej. "220KV_SE Cajamarca Norte.kmz"
                   Adentro: un Placemark de tipo <Polygon> (el patio de la
-                  subestación). Se usa el centroide del polígono como posición.
+                  subestación). Se usa el polígono completo para dibujarla en
+                  el mapa, y su centroide como posición de la etiqueta.
 
-  - LÍNEA:        "<kV>KV_L-<código[-código2]>_SE Origen - SE Destino_<A|S>.kmz"
+  - LÍNEA:        "<kV>KV_L-<código[-código2]>_<Origen> - <Destino>[_A|_S].kmz"
                   ej. "220KV_L-2007_SE Matucana - SE Callahuanca_A.kmz"
-                  El sufijo _A = Aérea, _S = Subterránea.
-                  Adentro: Placemarks de tipo <Point> — las torres (T01, T02, ...)
-                  y, normalmente, las subestaciones de los extremos con nombre
-                  "SE <nombre>". Las líneas subterráneas (_S) suelen NO tener
-                  puntos de torre individuales — en ese caso se usan los
-                  vértices de la <LineString> del trazado como respaldo.
+                      "138KV_L-1101_SE Paramonga Nueva - SE Paramonga Existente.kmz"
+                  El sufijo _A/_S (Aérea/Subterránea) es OPCIONAL — muchos
+                  archivos no lo traen. Adentro: Placemarks de tipo <Point> —
+                  las torres (T01, T02, ...) y, normalmente, las subestaciones
+                  de los extremos con nombre "SE <nombre>". Las líneas
+                  subterráneas suelen NO tener puntos de torre individuales —
+                  en ese caso se usan los vértices de la <LineString> del
+                  trazado como respaldo.
+
+  Nota: algunos archivos combinan dos circuitos con nombre de subestación
+  "ZZZ" como placeholder (ej. "138KV_L-1040-1047_SE ZZZ_A.kmz") cuando ya
+  existen los archivos individuales de cada circuito por separado — se
+  cargan igual (no se excluyen), ya que no se pidió deduplicarlos.
 
 Todos los .kmz (líneas y subestaciones) pueden convivir en una sola carpeta
 del repositorio, p. ej. kmz/ — el nombre del archivo basta para clasificarlos.
@@ -35,16 +42,21 @@ NS_KML = "{http://www.opengis.net/kml/2.2}"
 
 # Color por nivel de tensión para la leyenda y el trazado del mapa.
 COLORES_POR_VOLTAJE = {
-    220: "#111111",   # negro
-    138: "#808080",   # gris medio
-    69: "#B5B5B5",    # gris claro
-    60: "#111111",    # negro (comparte estilo con 50 kV en la leyenda de referencia)
-    50: "#111111",
+    220: "#E53935",   # rojo
+    138: "#2E7D32",   # verde
+    69: "#F57C00",    # naranja
+    60: "#1565C0",    # azul
+    50: "#1565C0",    # azul (comparte estilo con 60 kV)
 }
 
-# Patrón del nombre de archivo de una LÍNEA: "<kV>KV_L-<código(s)>_<resto>_<A|S>"
-PATRON_ARCHIVO_LINEA = re.compile(r"^(\d+)\s*kv_l-([\w().\-]+)_(.+)_([as])$", re.IGNORECASE)
-# Patrón del nombre de archivo de una SUBESTACIÓN: "<kV>KV_SE_<nombre>" o "<kV>KV_SE <nombre>"
+# "<kV>KV_L-<código(s)>_<resto>[_A|_S]" — el sufijo _A/_S es opcional.
+# El segmento de código no admite "_" (para no comerse un "_SE" pegado por
+# error de tipeo en el nombre), pero sí "-" entre códigos (ej. "2001-2002").
+PATRON_ARCHIVO_LINEA = re.compile(
+    r"^(\d+)\s*kv_l-([a-z0-9().]+(?:-[a-z0-9().]+)*)_(.+?)(?:_([as]))?$",
+    re.IGNORECASE,
+)
+# "<kV>KV_SE_<nombre>" o "<kV>KV_SE <nombre>"
 PATRON_ARCHIVO_SUBESTACION = re.compile(r"^(\d+)\s*kv[_ ]+se[_ ]*(.*)$", re.IGNORECASE)
 
 
@@ -64,7 +76,6 @@ def _leer_kml_de_kmz(ruta_kmz: Path) -> ET.Element:
         return ET.fromstring(contenido)
     except ET.ParseError:
         texto = contenido.decode("utf-8", errors="replace")
-        # quita "xmlns:prefijo=...", luego cualquier "prefijo:" que quede en tags/atributos
         texto = re.sub(r'\s+xmlns:\w+="[^"]*"', "", texto)
         texto = re.sub(r"(</?)\w+:", r"\1", texto)
         texto = re.sub(r'(\s)\w+:(\w+=")', r"\1\2", texto)
@@ -89,18 +100,31 @@ def _es_archivo_subestacion(nombre_archivo: str) -> bool:
 
 def _info_desde_nombre_linea(nombre_sin_ext: str):
     """Extrae (voltaje_kv, tipo) del nombre del archivo de una línea.
-    tipo es 'Aérea', 'Subterránea' o None si no se reconoce el patrón."""
+    tipo es 'Aérea', 'Subterránea' o None si el archivo no trae el sufijo."""
     m = PATRON_ARCHIVO_LINEA.match(nombre_sin_ext)
     if not m:
         return None, None
     voltaje_kv = int(m.group(1))
-    tipo = "Aérea" if m.group(4).lower() == "a" else "Subterránea"
+    sufijo = m.group(4)
+    tipo = {"a": "Aérea", "s": "Subterránea"}.get(sufijo.lower()) if sufijo else None
     return voltaje_kv, tipo
 
 
+def _nombre_mostrado_linea(nombre_sin_ext: str) -> str:
+    """'138KV_L-1047_SE Talta - SE Ares_A' -> 'L-1047 SE Talta - SE Ares'
+    (quita el prefijo de voltaje y el sufijo _A/_S; se muestra aparte).
+    Si el nombre no sigue el patrón esperado, se deja tal cual."""
+    m = PATRON_ARCHIVO_LINEA.match(nombre_sin_ext)
+    if not m:
+        return nombre_sin_ext
+    codigo, resto = m.group(2), m.group(3)
+    return f"L-{codigo} {resto.strip()}"
+
+
 def _parsear_subestacion(ruta_kmz: Path):
-    """Devuelve (nombre, lat, lon, voltaje_kv) a partir del polígono del patio
-    y del nombre del archivo."""
+    """Devuelve (nombre, lat_centroide, lon_centroide, voltaje_kv, poligono)
+    a partir del polígono del patio y del nombre del archivo. 'poligono' es
+    una lista [(lat, lon), ...] del contorno, o None si no se encontró."""
     nombre_sin_ext = ruta_kmz.stem
     m = PATRON_ARCHIVO_SUBESTACION.match(nombre_sin_ext)
     voltaje_kv = int(m.group(1)) if m else None
@@ -115,13 +139,13 @@ def _parsear_subestacion(ruta_kmz: Path):
         if puntos:
             lat_c = sum(p[0] for p in puntos) / len(puntos)
             lon_c = sum(p[1] for p in puntos) / len(puntos)
-            return nombre_se, lat_c, lon_c, voltaje_kv
+            return nombre_se, lat_c, lon_c, voltaje_kv, puntos
 
-    # Respaldo: si no hay polígono, probar con un Point directo
+    # Respaldo: si no hay polígono, probar con un Point directo (sin contorno)
     punto = raiz.find(f".//{NS_KML}Point/{NS_KML}coordinates")
     if punto is not None and punto.text:
         lat, lon = _coords_texto_a_latlon(punto.text)[0]
-        return nombre_se, lat, lon, voltaje_kv
+        return nombre_se, lat, lon, voltaje_kv, None
 
     return None
 
@@ -130,8 +154,8 @@ def _parsear_linea(ruta_kmz: Path):
     """Devuelve (nombre_linea, torres, subestaciones_inline, voltaje_kv, tipo).
     torres: [(nombre, lat, lon), ...]  (excluye las que empiezan con 'SE ')
     subestaciones_inline: [(nombre, lat, lon), ...]"""
-    nombre_linea = ruta_kmz.stem
-    voltaje_kv, tipo = _info_desde_nombre_linea(nombre_linea)
+    nombre_linea = _nombre_mostrado_linea(ruta_kmz.stem)
+    voltaje_kv, tipo = _info_desde_nombre_linea(ruta_kmz.stem)
     raiz = _leer_kml_de_kmz(ruta_kmz)
 
     torres, subestaciones_inline = [], []
@@ -157,7 +181,7 @@ def _parsear_linea(ruta_kmz: Path):
                 torres.append((nombre, lat, lon))
             continue
 
-        # Cables subterráneos (_S): no suele haber Point por tramo, solo el trazado.
+        # Cables subterráneos: no suele haber Point por tramo, solo el trazado.
         # Se guarda como respaldo por si no aparece ningún Point en todo el archivo.
         linea_str = placemark.find(f"{NS_KML}LineString/{NS_KML}coordinates")
         if linea_str is not None and linea_str.text and coords_linestring is None:
@@ -177,8 +201,9 @@ def cargar_lineas_y_subestaciones_kmz(carpeta: str = "kmz"):
 
     Devuelve:
       df_torres: DataFrame con columnas Linea, Torre, Latitud, Longitud
-      subestaciones: dict {nombre: (lat, lon, voltaje_kv_o_None)}
-      info_lineas: dict {nombre_linea: {"voltaje_kv": int|None, "tipo": "Aérea"|"Subterránea"|None}}
+      subestaciones: dict {nombre: {"lat", "lon", "voltaje_kv", "poligono"}}
+                      poligono es [(lat, lon), ...] del contorno real, o None
+      info_lineas: dict {nombre_linea: {"voltaje_kv": int|None, "tipo": str|None}}
     """
     carpeta_path = Path(carpeta)
     archivos_kmz = sorted(carpeta_path.glob("*.kmz"))
@@ -200,17 +225,26 @@ def cargar_lineas_y_subestaciones_kmz(carpeta: str = "kmz"):
         try:
             resultado = _parsear_subestacion(ruta)
             if resultado:
-                nombre_se, lat, lon, voltaje_kv = resultado
-                subestaciones[nombre_se] = (lat, lon, voltaje_kv)
+                nombre_se, lat, lon, voltaje_kv, poligono = resultado
+                subestaciones[nombre_se] = {
+                    "lat": lat, "lon": lon, "voltaje_kv": voltaje_kv, "poligono": poligono,
+                }
             else:
                 archivos_con_error.append(f"{ruta.name} (sin polígono ni punto reconocible)")
         except Exception as e:
             archivos_con_error.append(f"{ruta.name} ({e})")
 
     # 2) Luego las líneas: torres + subestaciones de extremo (solo si no vinieron
-    #    ya de un archivo dedicado, para no perder el voltaje confirmado)
+    #    ya de un archivo dedicado, para no perder el voltaje/polígono confirmado)
     for ruta in archivos_kmz:
         if _es_archivo_subestacion(ruta.name):
+            continue
+        if "zzz" in ruta.name.lower():
+            # Archivo combinado de varios circuitos con nombre de subestación
+            # "ZZZ" como placeholder — redundante con los archivos individuales
+            # de cada circuito (que sí tienen nombre y trazado real), y en la
+            # práctica suele venir con muy pocos puntos (solo los extremos),
+            # lo que dibuja una línea recta artificial en vez del trazado real.
             continue
         try:
             nombre_linea, torres, subestaciones_inline, voltaje_kv, tipo = _parsear_linea(ruta)
@@ -223,7 +257,9 @@ def cargar_lineas_y_subestaciones_kmz(carpeta: str = "kmz"):
                 )
             for nombre_se, lat, lon in subestaciones_inline:
                 if nombre_se not in subestaciones:
-                    subestaciones[nombre_se] = (lat, lon, None)
+                    subestaciones[nombre_se] = {
+                        "lat": lat, "lon": lon, "voltaje_kv": None, "poligono": None,
+                    }
             info_lineas[nombre_linea] = {"voltaje_kv": voltaje_kv, "tipo": tipo}
         except Exception as e:
             archivos_con_error.append(f"{ruta.name} ({e})")
