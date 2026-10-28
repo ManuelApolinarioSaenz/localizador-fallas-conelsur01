@@ -1079,6 +1079,33 @@ with col_mapa:
         )
     )
 
+    # Torres de la línea seleccionada únicamente — las demás líneas se
+    # quedan solo con el trazo, para no saturar el mapa con ~2,500 puntos.
+    datos_torres_sel = [
+        {
+            "position": [fila["Longitud"], fila["Latitud"]],
+            "nombre": f"Torre {fila['Torre']}",
+            "info": f" — {linea_seleccionada} · Km {fila['Distancia_m'] / 1000:.2f}",
+        }
+        for _, fila in df_linea.iterrows()
+    ]
+    capas_pydeck.append(
+        pdk.Layer(
+            "ScatterplotLayer",
+            data=datos_torres_sel,
+            get_position="position",
+            get_fill_color=hex_a_rgb(AZUL_CONELSUR),
+            get_line_color=[255, 255, 255, 255],
+            line_width_min_pixels=1,
+            stroked=True,
+            get_radius=5,
+            radius_units=pdk.types.String("pixels"),
+            radius_min_pixels=3,
+            radius_max_pixels=6,
+            pickable=True,
+        )
+    )
+
     # ---------------------------------------------------
     # Restricciones (zonas pobladas, cruces, etc.)
     # ---------------------------------------------------
