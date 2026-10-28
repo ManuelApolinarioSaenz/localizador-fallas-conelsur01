@@ -1098,10 +1098,10 @@ with col_mapa:
             get_line_color=[255, 255, 255, 255],
             line_width_min_pixels=1,
             stroked=True,
-            get_radius=5,
+            get_radius=3.5,
             radius_units=pdk.types.String("pixels"),
-            radius_min_pixels=3,
-            radius_max_pixels=6,
+            radius_min_pixels=2,
+            radius_max_pixels=4.5,
             pickable=True,
         )
     )
