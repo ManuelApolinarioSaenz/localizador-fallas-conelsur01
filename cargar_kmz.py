@@ -192,6 +192,17 @@ def _parsear_linea(ruta_kmz: Path):
     if not torres and coords_linestring:
         torres = [(f"T{i + 1:02d}", lat, lon) for i, (lat, lon) in enumerate(coords_linestring)]
 
+    # El orden en que aparecen los Placemark en el KMZ no siempre coincide con
+    # el orden físico real del recorrido (según cómo se digitalizó el archivo),
+    # lo que puede producir un trazado en zigzag. El número de torre (T01,
+    # T02, ..., T312) sí refleja la secuencia real, así que se ordena por ahí.
+    def _clave_orden_torre(torre):
+        nombre = torre[0]
+        m = re.search(r"\d+", nombre)
+        return (int(m.group()), nombre) if m else (10**9, nombre)
+
+    torres.sort(key=_clave_orden_torre)
+
     return nombre_linea, torres, subestaciones_inline, voltaje_kv, tipo
 
 
