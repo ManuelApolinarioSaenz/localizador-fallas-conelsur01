@@ -1,12 +1,9 @@
 import re
-import io
 import base64
 from pathlib import Path
-from io import BytesIO
 
 import streamlit as st
 import pydeck as pdk
-from PIL import Image, ImageDraw
 import pandas as pd
 import numpy as np
 import requests
@@ -40,15 +37,6 @@ COLORES_TIPO = {
     "Otro": "#808080",
 }
 
-# Colores de referencia por nivel de tensión (kV) para la leyenda
-COLORES_POR_VOLTAJE = {
-    220: "#D62828",
-    138: "#1E5BC6",
-    69: "#00A651",
-    60: "#8A2BE2",
-}
-
-
 st.set_page_config(
     layout="wide",
     page_title="Sistema de Localización de Fallas - SEIN",
@@ -58,9 +46,19 @@ st.set_page_config(
 # =========================================================
 # 0.1 MODO OSCURO — interruptor arriba a la derecha
 # =========================================================
-_col_vacio, _col_switch = st.columns([7, 1])
+_col_vacio, _col_vista, _col_switch = st.columns([6, 2, 1])
+with _col_vista:
+    vista_mapa = st.radio(
+        "Vista del mapa", options=["Calle", "Satélite"], horizontal=True,
+        label_visibility="collapsed", key="vista_mapa",
+    )
 with _col_switch:
     modo_oscuro = st.toggle("🌙 Oscuro", value=False, key="modo_oscuro")
+
+ESTILOS_MAPBOX = {
+    "Calle": "mapbox://styles/mapbox/streets-v12",
+    "Satélite": "mapbox://styles/mapbox/satellite-streets-v12",
+}
 
 # Tokens de color que cambian según el modo. Los colores de marca
 # (AZUL_CONELSUR, VERDE_CONELSUR) se mantienen fijos — se usan también
@@ -207,12 +205,52 @@ st.markdown(
 
         /* ---- Contenedor del mapa ---- */
         .mapa-card {{
+            position: relative;
             background-color: {COLOR_FONDO_TARJETA};
             border-radius: 14px;
             padding: 10px;
             box-shadow: 0 2px 12px {COLOR_SOMBRA};
             border: 1px solid {COLOR_BORDE};
             margin-bottom: 14px;
+        }}
+
+        /* ---- Leyenda flotante, fija en la esquina del mapa (compacta) ---- */
+        .leyenda-flotante {{
+            position: absolute;
+            bottom: 22px;
+            right: 22px;
+            z-index: 50;
+            background-color: rgba(255, 255, 255, 0.93);
+            border-radius: 8px;
+            padding: 8px 12px;
+            box-shadow: 0 2px 14px rgba(0, 0, 0, 0.25);
+            width: max-content;
+            max-width: 260px;
+            pointer-events: none;
+        }}
+        .leyenda-flotante .leyenda-item {{
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            margin-right: 0;
+            margin-bottom: 1px;
+            font-size: 10px;
+            line-height: 1.3;
+            white-space: nowrap;
+            color: #1A1A1A;
+        }}
+        .leyenda-flotante .leyenda-titulo {{
+            color: {AZUL_CONELSUR};
+            font-size: 10px;
+            margin-bottom: 3px;
+        }}
+        .leyenda-flotante .leyenda-linea-swatch {{
+            width: 16px;
+            border-top-width: 2px;
+        }}
+        .leyenda-flotante .leyenda-punto-swatch {{
+            width: 8px;
+            height: 8px;
         }}
 
         /* ---- Botones ---- */
@@ -484,6 +522,15 @@ def hex_a_rgb(color_hex, alpha=255):
     return [r, g, b, alpha]
 
 
+# El TextLayer de deck.gl solo genera glifos para los caracteres de esta lista
+# (por defecto, un set ASCII básico) — sin tildes/eñe aquí, nombres como
+# "Huánuco" o "Ñaña" se ven con letras faltantes ("Missing character").
+JUEGO_CARACTERES_TEXTO = (
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+    "0123456789 .,:;()/_-·–—'\"°%ÁÉÍÓÚÑáéíóúñÜü"
+)
+
+
 URL_EMERGENCIAS_BOMBEROS = (
     "https://docs.google.com/spreadsheets/d/"
     "1n_YelAX4D_mFQbXLduWTpjFLfzYOElzSYM8FiiWBhto/export?format=csv"
@@ -524,15 +571,64 @@ def cargar_emergencias_bomberos():
     return df_em[["parte", "fecha_hora", "direccion", "tipo", "estado", "maquinas", "lat", "lon"]]
 
 
-@st.cache_resource(show_spinner=False)
-def generar_icono_cuadrado_b64(lado_px=28):
-    """Genera un cuadrado negro con borde blanco como PNG en base64, para el IconLayer de subestaciones."""
-    img = Image.new("RGBA", (lado_px, lado_px), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    draw.rectangle([2, 2, lado_px - 3, lado_px - 3], fill=(17, 17, 17, 255), outline=(255, 255, 255, 255), width=2)
-    buf = BytesIO()
-    img.save(buf, format="PNG")
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
+# Open-Meteo: API meteorológica gratuita, sin clave ni registro. No da la
+# ubicación exacta de cada rayo (eso solo lo tiene Blitzortung, y solo para
+# participantes de su red) — pero el código de clima (weather_code) sí avisa
+# si hay tormenta eléctrica en curso en el punto consultado, que es la mejor
+# aproximación gratuita disponible a "riesgo de descarga atmosférica".
+DESCRIPCION_CLIMA = {
+    0: "Despejado", 1: "Mayormente despejado", 2: "Parcialmente nublado", 3: "Nublado",
+    45: "Niebla", 48: "Niebla con escarcha",
+    51: "Llovizna ligera", 53: "Llovizna moderada", 55: "Llovizna intensa",
+    56: "Llovizna helada ligera", 57: "Llovizna helada intensa",
+    61: "Lluvia ligera", 63: "Lluvia moderada", 65: "Lluvia intensa",
+    66: "Lluvia helada ligera", 67: "Lluvia helada intensa",
+    71: "Nevada ligera", 73: "Nevada moderada", 75: "Nevada intensa", 77: "Granos de nieve",
+    80: "Chubascos ligeros", 81: "Chubascos moderados", 82: "Chubascos violentos",
+    85: "Chubascos de nieve ligeros", 86: "Chubascos de nieve intensos",
+    95: "Tormenta eléctrica", 96: "Tormenta con granizo ligero", 99: "Tormenta con granizo fuerte",
+}
+CODIGOS_TORMENTA = {95, 96, 99}
+
+
+@st.cache_data(ttl=600, show_spinner="Consultando clima en el punto de falla...")
+def cargar_clima(lat, lon):
+    """Clima actual + acumulado de lluvia de las últimas 24 h, para el punto dado."""
+    resp = requests.get(
+        "https://api.open-meteo.com/v1/forecast",
+        params={
+            "latitude": lat,
+            "longitude": lon,
+            "current": "precipitation,weather_code,wind_speed_10m",
+            "hourly": "precipitation,weather_code",
+            "past_days": 1,
+            "forecast_days": 1,
+            "timezone": "America/Lima",
+        },
+        timeout=10,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+@st.cache_data(ttl=600, show_spinner="Consultando clima a lo largo de la línea...")
+def cargar_clima_en_puntos(lats, lons):
+    """Clima actual en varios puntos a la vez — Open-Meteo acepta listas de
+    coordenadas separadas por coma en una sola llamada, y devuelve una lista
+    de resultados (uno por punto) en vez de un solo objeto."""
+    resp = requests.get(
+        "https://api.open-meteo.com/v1/forecast",
+        params={
+            "latitude": ",".join(f"{v:.5f}" for v in lats),
+            "longitude": ",".join(f"{v:.5f}" for v in lons),
+            "current": "precipitation,weather_code",
+            "timezone": "America/Lima",
+        },
+        timeout=15,
+    )
+    resp.raise_for_status()
+    datos = resp.json()
+    return datos if isinstance(datos, list) else [datos]
 
 
 # Subestaciones de origen/destino por código de línea (tomado de la hoja
@@ -577,9 +673,9 @@ SUBESTACIONES_POR_LINEA = {
 
 
 def construir_subestaciones(datos_lineas):
-    """Ubica cada subestación (nombre) en la coordenada de la primera/última
-    torre de alguna línea que la tenga como extremo. Si varias líneas comparten
-    subestación, se usa la primera coincidencia encontrada."""
+    """Respaldo cuando se carga desde Excel (sin KMZ): ubica cada subestación
+    en la coordenada de la primera/última torre de alguna línea que la tenga
+    como extremo. Sin polígono ni voltaje confirmado, a diferencia del KMZ."""
     subestaciones = {}
     for nombre_linea, grupo in datos_lineas.items():
         codigo = codigo_de_nombre_linea(nombre_linea)
@@ -589,9 +685,15 @@ def construir_subestaciones(datos_lineas):
         nombre_origen, nombre_destino = extremos
         primera, ultima = grupo.iloc[0], grupo.iloc[-1]
         if nombre_origen not in subestaciones:
-            subestaciones[nombre_origen] = (primera["Latitud"], primera["Longitud"])
+            subestaciones[nombre_origen] = {
+                "lat": primera["Latitud"], "lon": primera["Longitud"],
+                "voltaje_kv": None, "poligono": None,
+            }
         if nombre_destino not in subestaciones:
-            subestaciones[nombre_destino] = (ultima["Latitud"], ultima["Longitud"])
+            subestaciones[nombre_destino] = {
+                "lat": ultima["Latitud"], "lon": ultima["Longitud"],
+                "voltaje_kv": None, "poligono": None,
+            }
     return subestaciones
 
 
@@ -601,13 +703,10 @@ def construir_subestaciones(datos_lineas):
 #    termina de subir el set completo de archivos KMZ al repositorio.
 # =========================================================
 filas_descartadas = 0
-subestaciones_voltaje = {}  # nombre -> kV (None si no se pudo determinar)
 info_lineas = {}  # nombre_linea -> {"voltaje_kv": int|None, "tipo": "Aérea"|"Subterránea"|None}
 
 if Path("kmz").is_dir() and any(Path("kmz").glob("*.kmz")):
-    df, subestaciones_kmz, info_lineas = cargar_lineas_y_subestaciones_kmz("kmz")
-    subestaciones = {nombre: (lat, lon) for nombre, (lat, lon, kv) in subestaciones_kmz.items()}
-    subestaciones_voltaje = {nombre: kv for nombre, (lat, lon, kv) in subestaciones_kmz.items()}
+    df, subestaciones, info_lineas = cargar_lineas_y_subestaciones_kmz("kmz")
     fuente_datos = "kmz"
 else:
     df = pd.read_excel("consolidado_total.xlsx")
@@ -683,12 +782,12 @@ with col_control:
     distancia_falla_m = distancia_falla_km * 1000
 
     if restricciones_disponibles:
-        mostrar_restricciones = st.checkbox("Mostrar restricciones en el mapa", value=True)
+        mostrar_restricciones = st.checkbox("Mostrar restricciones en el mapa", value=False)
     else:
         mostrar_restricciones = False
         st.warning("No se encontró restricciones_conelsur.csv en el repositorio.")
 
-    mostrar_subestaciones = st.checkbox("Mostrar subestaciones (cuadrados negros)", value=True)
+    mostrar_subestaciones = st.checkbox("Mostrar subestaciones (patio real)", value=False)
 
     mostrar_incendios = st.checkbox("🔥 Mostrar incendios activos (Bomberos Perú)", value=False)
     df_incendios_cercanos = pd.DataFrame()
@@ -717,13 +816,52 @@ with col_control:
                     )
             if cercanos:
                 st.error(f"⚠️ {len(cercanos)} incendio(s) EN ATENCIÓN a menos de 500 m de **{linea_seleccionada}**")
-                for r, dist_m, torre in cercanos:
-                    st.write(
-                        f"**{r['direccion']}**  \n"
-                        f"A {dist_m:.0f} m de la torre {torre['Torre']} · {r['fecha_hora']}"
+
+                muy_cercanos = [c for c in cercanos if c[1] < 100]
+                if muy_cercanos:
+                    st.error(
+                        f"🚨 ¡ALERTA CRÍTICA! {len(muy_cercanos)} incendio(s) a **menos de 100 m** "
+                        "de la línea — riesgo inmediato, requiere atención prioritaria."
                     )
+
+                for r, dist_m, torre in cercanos:
+                    if dist_m < 100:
+                        st.write(
+                            f"🚨 **{r['direccion']}** — a solo **{dist_m:.0f} m** "
+                            f"de la torre {torre['Torre']} · {r['fecha_hora']}"
+                        )
+                    else:
+                        st.write(
+                            f"**{r['direccion']}**  \n"
+                            f"A {dist_m:.0f} m de la torre {torre['Torre']} · {r['fecha_hora']}"
+                        )
         except Exception as e:
             st.warning(f"No se pudo consultar la hoja de emergencias de Bomberos: {e}")
+
+    # ---------------------------------------------------
+    # Clima a lo largo de la línea: lluvia y riesgo de tormenta eléctrica.
+    # El checkbox va aquí (justo debajo de incendios); el detalle puntual en
+    # el punto de falla se muestra más abajo, una vez calculada esa posición.
+    # ---------------------------------------------------
+    mostrar_clima = st.checkbox("🌩️ Mostrar clima (lluvia / riesgo de rayo)", value=False)
+    datos_calor_clima = []
+    if mostrar_clima:
+        try:
+            paso = max(1, len(df_linea) // 12)  # ~12 puntos repartidos a lo largo de la línea
+            puntos_muestra = df_linea.iloc[::paso]
+            resultados_clima = cargar_clima_en_puntos(
+                puntos_muestra["Latitud"].tolist(), puntos_muestra["Longitud"].tolist()
+            )
+            for (_, fila_torre), resultado in zip(puntos_muestra.iterrows(), resultados_clima):
+                actual = resultado.get("current", {})
+                codigo = actual.get("weather_code")
+                lluvia = actual.get("precipitation") or 0
+                peso = 1.0 if codigo in CODIGOS_TORMENTA else (0.35 if lluvia > 0 else 0.04)
+                datos_calor_clima.append(
+                    {"position": [fila_torre["Longitud"], fila_torre["Latitud"]], "weight": peso}
+                )
+        except Exception as e:
+            st.warning(f"No se pudo consultar el clima a lo largo de la línea: {e}")
 
     # ---------------------------------------------------
     # Ubicación de la falla
@@ -752,15 +890,10 @@ with col_control:
         ubicacion_detalle = f"Entre torres <b>{t_anterior['Torre']}</b> y <b>{t_posterior['Torre']}</b>"
 
     st.markdown(
-        f"""
-        <div class="ubicacion-card">
-            <div class="titulo">📍 Ubicación estimada</div>
-            <div class="detalle">
-                Coordenadas: {lat_falla:.5f}, {lon_falla:.5f}<br>
-                {ubicacion_detalle}
-            </div>
-        </div>
-        """,
+        f'<div class="ubicacion-card">'
+        f'<div class="titulo">📍 Ubicación estimada</div>'
+        f'<div class="detalle">Coordenadas: {lat_falla:.5f}, {lon_falla:.5f}<br>{ubicacion_detalle}</div>'
+        f'</div>',
         unsafe_allow_html=True,
     )
 
@@ -805,6 +938,34 @@ with col_control:
                 else:
                     st.warning(detalle)
 
+    # ---------------------------------------------------
+    # Clima en el punto de falla: detalle puntual (el checkbox ya se
+    # declaró arriba, justo debajo de incendios)
+    # ---------------------------------------------------
+    if mostrar_clima:
+        try:
+            clima = cargar_clima(lat_falla, lon_falla)
+            actual = clima["current"]
+            codigo = actual["weather_code"]
+            descripcion = DESCRIPCION_CLIMA.get(codigo, f"Código {codigo}")
+            lluvia_actual = actual.get("precipitation", 0) or 0
+
+            lluvia_24h = None
+            if "hourly" in clima and clima["hourly"].get("precipitation"):
+                lluvia_24h = sum(v for v in clima["hourly"]["precipitation"][:24] if v is not None)
+
+            if codigo in CODIGOS_TORMENTA:
+                st.error(f"⚡ Riesgo de descarga atmosférica en el punto de falla — {descripcion}")
+            elif lluvia_actual > 0:
+                st.warning(f"🌧️ Lluvia en el punto de falla ({lluvia_actual:.1f} mm/h) — {descripcion}")
+            else:
+                st.info(f"☀️ Sin lluvia en el punto de falla — {descripcion}")
+
+            if lluvia_24h is not None:
+                st.caption(f"Acumulado de lluvia en las últimas 24 h: {lluvia_24h:.1f} mm")
+        except Exception as e:
+            st.warning(f"No se pudo consultar el clima: {e}")
+
 # =========================================================
 # 6. MAPA
 # =========================================================
@@ -840,37 +1001,51 @@ with col_mapa:
         unsafe_allow_html=True,
     )
 
-    COLOR_LINEA_TENUE = "#AEB8D1"
+    COLOR_LINEA_SIN_VOLTAJE = "#AEB8D1"  # cuando no se pudo determinar el kV
     capas_pydeck = []
 
     def _info_voltaje_linea(nombre_linea):
         datos = info_lineas.get(nombre_linea, {})
         kv, tipo = datos.get("voltaje_kv"), datos.get("tipo")
         if kv and tipo:
-            return f"<br/>{kv} kV · {tipo}"
+            return f" — {kv} kV · {tipo}"
         if kv:
-            return f"<br/>{kv} kV"
+            return f" — {kv} kV"
         return ""
 
+    def _color_por_voltaje(nombre_linea):
+        kv = info_lineas.get(nombre_linea, {}).get("voltaje_kv")
+        return COLORES_POR_VOLTAJE.get(kv, COLOR_LINEA_SIN_VOLTAJE)
+
+    def _tramos_linea(coords_lonlat, nombre_linea):
+        """Un solo trazo continuo para aéreas; varios tramos cortos alternados
+        (efecto punteado) para subterráneas — PathLayer no soporta dash nativo."""
+        es_subterranea = info_lineas.get(nombre_linea, {}).get("tipo") == "Subterránea"
+        if not es_subterranea or len(coords_lonlat) < 2:
+            return [coords_lonlat]
+        return [coords_lonlat[i:i + 2] for i in range(0, len(coords_lonlat) - 1, 2)]
+
     # ---------------------------------------------------
-    # Todas las demás líneas, en tono tenue
+    # Todas las demás líneas, coloreadas por nivel de tensión
     # ---------------------------------------------------
     datos_otras_lineas = [
         {
-            "path": grupo_linea[["Longitud", "Latitud"]].values.tolist(),
+            "path": tramo,
             "nombre": f"Línea: {nombre_linea}",
             "info": _info_voltaje_linea(nombre_linea),
+            "color": hex_a_rgb(_color_por_voltaje(nombre_linea), 190),
         }
         for nombre_linea, grupo_linea in datos_lineas.items()
         if nombre_linea != linea_seleccionada
+        for tramo in _tramos_linea(grupo_linea[["Longitud", "Latitud"]].values.tolist(), nombre_linea)
     ]
     capas_pydeck.append(
         pdk.Layer(
             "PathLayer",
             data=datos_otras_lineas,
             get_path="path",
-            get_color=hex_a_rgb(COLOR_LINEA_TENUE, 180),
-            get_width=1.5,
+            get_color="color",
+            get_width=2,
             width_units=pdk.types.String("pixels"),
             joint_rounded=True,
             cap_rounded=True,
@@ -879,14 +1054,16 @@ with col_mapa:
     )
 
     # ---------------------------------------------------
-    # Línea seleccionada, resaltada en azul de marca
+    # Línea seleccionada, resaltada en azul de marca (siempre distinguible
+    # del resto, sin importar su voltaje) y más gruesa
     # ---------------------------------------------------
     dato_linea_sel = [
         {
-            "path": df_linea[["Longitud", "Latitud"]].values.tolist(),
+            "path": tramo,
             "nombre": f"Línea: {linea_seleccionada}",
             "info": _info_voltaje_linea(linea_seleccionada),
         }
+        for tramo in _tramos_linea(df_linea[["Longitud", "Latitud"]].values.tolist(), linea_seleccionada)
     ]
     capas_pydeck.append(
         pdk.Layer(
@@ -894,7 +1071,7 @@ with col_mapa:
             data=dato_linea_sel,
             get_path="path",
             get_color=hex_a_rgb(AZUL_CONELSUR),
-            get_width=3,
+            get_width=4,
             width_units=pdk.types.String("pixels"),
             joint_rounded=True,
             cap_rounded=True,
@@ -910,9 +1087,9 @@ with col_mapa:
         for _, r in df_rest_linea.iterrows():
             color_rgb = hex_a_rgb(COLORES_TIPO.get(r["Tipo"], "#808080"), 200)
             info = (
-                f"<br/>{r['Zona_Geografica']}"
-                f"<br/>{r['Texto_Original']}"
-                f"<br/>D. horizontal: {r['Distancia_Horizontal_m']:.0f} m · Fuente: {r['Fuente']}"
+                f" — {r['Zona_Geografica']}"
+                f" · {r['Texto_Original']}"
+                f" · D. horizontal: {r['Distancia_Horizontal_m']:.0f} m · Fuente: {r['Fuente']}"
             )
             if r["Acumulado_Inicio_m"] == r["Acumulado_Fin_m"]:
                 datos_rest_punto.append(
@@ -960,55 +1137,87 @@ with col_mapa:
             )
 
     # ---------------------------------------------------
-    # Subestaciones: cuadrado negro + nombre siempre visible
+    # Subestaciones: su polígono real (patio) + nombre siempre visible.
+    # Ya no se dibuja un cuadrado sintético — el KMZ trae el contorno real.
     # ---------------------------------------------------
     if mostrar_subestaciones and subestaciones:
-        icono_subestacion = {
-            "url": generar_icono_cuadrado_b64(),
-            "width": 28,
-            "height": 28,
-            "anchorY": 14,
-            "anchorX": 14,
-        }
-        datos_subestaciones = [
-            {
-                "position": [lon_se, lat_se],
-                "nombre": (
-                    f"{nombre_se} · {subestaciones_voltaje.get(nombre_se)} kV"
-                    if subestaciones_voltaje.get(nombre_se)
-                    else nombre_se
-                ),
-                "icono": icono_subestacion,
-                "info": "",
-            }
-            for nombre_se, (lat_se, lon_se) in subestaciones.items()
-            if not (pd.isna(lat_se) or pd.isna(lon_se))
-        ]
-        capas_pydeck.append(
-            pdk.Layer(
-                "IconLayer",
-                data=datos_subestaciones,
-                get_icon="icono",
-                get_position="position",
-                get_size=22,
-                size_scale=1,
-                pickable=True,
+        datos_etiquetas_se, datos_poligonos_se = [], []
+        for nombre_se, info_se in subestaciones.items():
+            lat_se, lon_se = info_se.get("lat"), info_se.get("lon")
+            if pd.isna(lat_se) or pd.isna(lon_se):
+                continue
+            kv = info_se.get("voltaje_kv")
+            nombre_mostrado = f"{nombre_se} · {kv} kV" if kv else nombre_se
+            datos_etiquetas_se.append({"position": [lon_se, lat_se], "nombre": nombre_mostrado, "info": ""})
+
+            poligono = info_se.get("poligono")
+            if poligono:
+                datos_poligonos_se.append(
+                    {
+                        "poligono": [[lon, lat] for lat, lon in poligono],
+                        "nombre": nombre_mostrado,
+                        "info": "",
+                    }
+                )
+
+        if datos_poligonos_se:
+            capas_pydeck.append(
+                pdk.Layer(
+                    "PolygonLayer",
+                    data=datos_poligonos_se,
+                    get_polygon="poligono",
+                    get_fill_color=[17, 17, 17, 110],
+                    get_line_color=[17, 17, 17, 255],
+                    line_width_min_pixels=1.5,
+                    stroked=True,
+                    filled=True,
+                    pickable=True,
+                )
             )
-        )
         capas_pydeck.append(
             pdk.Layer(
                 "TextLayer",
-                data=datos_subestaciones,
+                data=datos_etiquetas_se,
+                character_set=pdk.types.String(JUEGO_CARACTERES_TEXTO),
                 get_position="position",
                 get_text="nombre",
-                get_size=13,
-                get_color=[17, 17, 17, 255],
-                get_background_color=[255, 255, 255, 220],
-                background=True,
-                get_pixel_offset=[26, 0],
+                get_size=900,
+                size_units=pdk.types.String("meters"),
+                size_min_pixels=0,
+                size_max_pixels=13,
+                get_color=[255, 255, 255, 255],
+                outline_width=4,
+                outline_color=[0, 0, 0, 220],
+                font_settings={"sdf": True},
+                get_pixel_offset=[10, 0],
                 get_alignment_baseline="'center'",
                 get_text_anchor="'start'",
-                font_family="Inter, Arial, sans-serif",
+                font_family=pdk.types.String("Inter, Arial, sans-serif"),
+            )
+        )
+
+    # ---------------------------------------------------
+    # Mapa de calor: riesgo de tormenta eléctrica / lluvia a lo largo de la
+    # línea (muestreado en ~12 puntos vía Open-Meteo; ver panel de control).
+    # ---------------------------------------------------
+    if mostrar_clima and datos_calor_clima:
+        capas_pydeck.append(
+            pdk.Layer(
+                "HeatmapLayer",
+                data=datos_calor_clima,
+                get_position="position",
+                get_weight="weight",
+                radius_pixels=70,
+                intensity=1.5,
+                threshold=0.03,
+                color_range=[
+                    [237, 231, 246, 0],
+                    [203, 178, 227, 130],
+                    [158, 119, 199, 170],
+                    [122, 68, 172, 210],
+                    [74, 20, 134, 255],
+                ],
+                pickable=False,
             )
         )
 
@@ -1022,7 +1231,7 @@ with col_mapa:
             {
                 "position": [r["lon"], r["lat"]],
                 "nombre": f"🔥 {r['tipo']}",
-                "info": f"<br/>Estado: {r['estado']}<br/>{r['direccion']}<br/>{r['fecha_hora']}<br/>Máquinas: {r['maquinas'] or '—'}",
+                "info": f" — {r['estado']} · {r['direccion']} · {r['fecha_hora']} · Máquinas: {r['maquinas'] or '—'}",
                 "color": COLOR_INCENDIO_ATENCION if r["estado"].upper() == "ATENDIENDO" else COLOR_INCENDIO_CERRADO,
             }
             for _, r in df_incendios.dropna(subset=["lat", "lon"]).iterrows()
@@ -1060,7 +1269,7 @@ with col_mapa:
     dato_falla = [
         {
             "position": [lon_falla, lat_falla],
-            "nombre": f"⚡ Falla estimada — Km {distancia_falla_km:.2f}",
+            "nombre": f"Falla estimada — Km {distancia_falla_km:.2f}",
             "info": "",
         }
     ]
@@ -1082,31 +1291,52 @@ with col_mapa:
         pdk.Layer(
             "TextLayer",
             data=dato_falla,
+            character_set=pdk.types.String(JUEGO_CARACTERES_TEXTO),
             get_position="position",
             get_text="nombre",
             get_size=13,
             get_color=hex_a_rgb(VERDE_CONELSUR_OSCURO),
-            get_background_color=[255, 255, 255, 220],
-            background=True,
+            outline_width=3,
+            outline_color=[255, 255, 255, 230],
+            font_settings={"sdf": True},
             get_pixel_offset=[0, -18],
-            font_family="Poppins, Arial, sans-serif",
+            font_family=pdk.types.String("Poppins, Arial, sans-serif"),
         )
     )
 
     # ---------------------------------------------------
-    # Vista inicial: encuadra todas las líneas (no solo la seleccionada)
+    # Vista: se encuadra la línea SELECCIONADA (no todo el país), así que al
+    # cambiar de línea en el desplegable el mapa se acerca automáticamente a
+    # ella. De paso, esto también ayuda en modo Satélite: una sola línea cubre
+    # mucho menos área que el país entero, por lo que pide muchas menos
+    # teselas satelitales de golpe (evita los 429 de Mapbox).
     # ---------------------------------------------------
-    puntos_vista = df[["Longitud", "Latitud"]].dropna().values.tolist()
-    vista_inicial = pdk.data_utils.compute_view(puntos_vista) if puntos_vista else pdk.ViewState(
-        latitude=lat_falla, longitude=lon_falla, zoom=6
+    puntos_vista_linea = df_linea[["Longitud", "Latitud"]].dropna().values.tolist()
+    vista_inicial = pdk.data_utils.compute_view(puntos_vista_linea) if puntos_vista_linea else pdk.ViewState(
+        latitude=lat_falla, longitude=lon_falla, zoom=12
     )
     vista_inicial.pitch = 0
+    vista_inicial.max_zoom = 20  # el límite real de Mapbox satelital ronda ahí; 22 no aporta más detalle
+
+    # Desde Streamlit 1.64, [mapbox] en config.toml ya no funciona — el token
+    # se pasa directamente a PyDeck. Se lee de los "Secrets" de Streamlit
+    # Cloud (Settings > Secrets, formato [mapbox] token = "pk...."), nunca
+    # hardcodeado en el repo.
+    try:
+        token_mapbox = st.secrets["mapbox"]["token"]
+    except Exception:
+        token_mapbox = None
+        st.warning(
+            "⚠️ Falta configurar el token de Mapbox en Settings → Secrets de "
+            "Streamlit Cloud — el mapa satelital no cargará sin eso."
+        )
 
     mapa_deck = pdk.Deck(
         layers=capas_pydeck,
         initial_view_state=vista_inicial,
-        map_provider="carto",
-        map_style="dark" if modo_oscuro else "light",
+        map_provider="mapbox",
+        map_style=ESTILOS_MAPBOX[vista_mapa],
+        api_keys={"mapbox": token_mapbox} if token_mapbox else None,
         tooltip={
             "html": "<b>{nombre}</b>{info}",
             "style": {
@@ -1118,8 +1348,46 @@ with col_mapa:
         },
     )
 
+    # ---------------------------------------------------
+    # Leyenda flotante fija en la esquina del mapa — dinámica: las líneas de
+    # voltaje siempre se muestran (siempre están en el mapa), pero incendios
+    # y clima solo aparecen si su checkbox respectivo está activo.
+    # ---------------------------------------------------
+    seccion_leyenda_incendios = ""
+    if mostrar_incendios:
+        seccion_leyenda_incendios = (
+            '<span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#D62828;"></span>Incendio en Atención</span>'
+            '<span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#FF9800;"></span>Incendio Cerrado</span>'
+        )
+
+    seccion_leyenda_clima = ""
+    if mostrar_clima:
+        seccion_leyenda_clima = (
+            '<span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#4A1486;"></span>Riesgo de tormenta eléctrica</span>'
+            '<span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#9E77C7;"></span>Lluvia</span>'
+        )
+
+    # Todo en una sola línea, sin sangría: Streamlit/Markdown interpreta 4+
+    # espacios de sangría al inicio de línea como un bloque de código, lo que
+    # hacía que parte del HTML se mostrara como texto literal en vez de
+    # renderizarse.
+    leyenda_html = (
+        '<div class="leyenda-flotante">'
+        '<div class="leyenda-titulo">Leyenda</div>'
+        f'<span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[220]};"></span>Activo de Transmisión de 220KV</span>'
+        f'<span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[138]};"></span>Activo de Transmisión de 138KV</span>'
+        f'<span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[69]};"></span>Activo de Transmisión de 69KV</span>'
+        f'<span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[60]};"></span>Activo de Transmisión de 60KV / 50KV</span>'
+        '<span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:#111111; border-top-style:solid;"></span>Línea Aérea</span>'
+        '<span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:#111111; border-top-style:dashed;"></span>Línea Subterránea</span>'
+        f'{seccion_leyenda_incendios}'
+        f'{seccion_leyenda_clima}'
+        '</div>'
+    )
+
     st.markdown('<div class="mapa-card">', unsafe_allow_html=True)
     st.pydeck_chart(mapa_deck, use_container_width=True, height=580)
+    st.markdown(leyenda_html, unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
     if mostrar_restricciones and not df_rest_linea.empty:
@@ -1130,38 +1398,12 @@ with col_mapa:
             for t in tipos_presentes
         )
         st.markdown(
-            f"""
-            <div class="leyenda-card">
-                <div class="leyenda-titulo">Leyenda de restricciones</div>
-                {leyenda_items}
-            </div>
-            """,
+            f'<div class="leyenda-card">'
+            f'<div class="leyenda-titulo">Leyenda de restricciones</div>'
+            f'{leyenda_items}'
+            f'</div>',
             unsafe_allow_html=True,
         )
-
-    # ---------------------------------------------------
-    # Leyenda de niveles de tensión, tipo de línea e incendios
-    # Nota: el color por voltaje de cada LÍNEA aún no se aplica en el mapa
-    # (el KMZ de la línea no trae el kV) — esta leyenda es la referencia
-    # para cuando se confirme esa regla. El voltaje de las SUBESTACIONES
-    # sí viene confirmado (nombre del archivo) y ya se ve en su etiqueta.
-    # ---------------------------------------------------
-    st.markdown(
-        f"""
-        <div class="leyenda-card" style="margin-top: 10px;">
-            <div class="leyenda-titulo">Leyenda</div>
-            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[220]};"></span>Activo de Transmisión de 220KV</span>
-            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[138]};"></span>Activo de Transmisión de 138KV</span>
-            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[69]};"></span>Activo de Transmisión de 69KV</span>
-            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_POR_VOLTAJE[60]};"></span>Activo de Transmisión de 60KV / 50KV</span>
-            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:#111111; border-top-style:solid;"></span>Línea Aérea</span>
-            <span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:#111111; border-top-style:dashed;"></span>Línea Subterránea</span>
-            <span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#D62828;"></span>Incendio en Atención</span>
-            <span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#FF9800;"></span>Incendio Cerrado</span>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
 
 st.markdown(
     '<div class="conelsur-footer">CONELSUR — Centro de Control de Operaciones de Transmisión · '
