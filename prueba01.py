@@ -59,12 +59,19 @@ ESTILOS_MAPBOX = {
     "Calle": "mapbox://styles/mapbox/streets-v12",
 }
 
-# Imágenes satelitales de Esri World Imagery: públicas, sin token ni cuota
-# de Mapbox. Antes se usaba "satellite-streets-v12" de Mapbox, pero el
-# componente de mapas de Streamlit trae mapbox-gl 1.13, que no carga bien
-# los estilos v12, y además dependía del token/cuota (errores 429): el
-# resultado era la pantalla en negro al elegir "Satélite".
-URL_TESELAS_SATELITE = (
+# Vista Satélite con imágenes de Mapbox (satellite-streets-v12: imagen
+# satelital + calles y nombres). No se usa como "map_style" porque el
+# componente de mapas de Streamlit trae mapbox-gl 1.13, que no carga bien los
+# estilos v12 (pantalla negra). En su lugar se piden las teselas ya
+# renderizadas a la Static Tiles API de Mapbox y se dibujan como capa raster.
+URL_TESELAS_SATELITE_MAPBOX = (
+    "https://api.mapbox.com/styles/v1/mapbox/satellite-streets-v12/tiles/512/"
+    "{z}/{x}/{y}@2x?access_token="
+)
+
+# Respaldo si no hay token de Mapbox configurado: Esri World Imagery
+# (pública, sin token).
+URL_TESELAS_SATELITE_ESRI = (
     "https://server.arcgisonline.com/ArcGIS/rest/services/"
     "World_Imagery/MapServer/tile/{z}/{y}/{x}"
 )
@@ -1375,13 +1382,19 @@ with col_mapa:
         token_mapbox = st.secrets["mapbox"]["token"]
     except Exception:
         token_mapbox = None
-        if vista_mapa != "Satélite":
-            st.warning(
-                "⚠️ Falta configurar el token de Mapbox en Settings → Secrets de "
-                "Streamlit Cloud — la vista Calle no cargará sin eso."
-            )
+        st.warning(
+            "⚠️ Falta configurar el token de Mapbox en Settings → Secrets de "
+            "Streamlit Cloud — la vista Calle no cargará y la Satélite usará "
+            "imágenes de Esri en lugar de Mapbox."
+        )
 
     if vista_mapa == "Satélite":
+        if token_mapbox:
+            url_teselas_satelite = URL_TESELAS_SATELITE_MAPBOX + token_mapbox
+            tamano_tesela = 512
+        else:
+            url_teselas_satelite = URL_TESELAS_SATELITE_ESRI
+            tamano_tesela = 256
         # TerrainLayer es la capa de teselas raster que Streamlit puede
         # dibujar sin JavaScript propio. Se usa la misma imagen como
         # "elevación" con el decodificador en cero: el terreno queda plano
@@ -1390,12 +1403,12 @@ with col_mapa:
         capa_satelite = pdk.Layer(
             "TerrainLayer",
             id="fondo-satelital",
-            elevation_data=URL_TESELAS_SATELITE,
-            texture=URL_TESELAS_SATELITE,
+            elevation_data=url_teselas_satelite,
+            texture=url_teselas_satelite,
             elevation_decoder={"rScaler": 0, "gScaler": 0, "bScaler": 0, "offset": 0},
             min_zoom=0,
             max_zoom=19,
-            tile_size=256,
+            tile_size=tamano_tesela,
             mesh_max_error=4,
             # Se dibuja siempre detrás de las demás capas (sin pelear por la
             # profundidad con las líneas, que también están a altura 0).
