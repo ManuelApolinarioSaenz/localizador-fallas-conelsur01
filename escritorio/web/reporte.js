@@ -11,7 +11,7 @@ const PDF = {
   rojo: [198, 40, 40], rojoClaro: [253, 236, 236], ambar: [183, 121, 31], ambarClaro: [255, 246, 224],
   m: 14,          // margen (mm)
 };
-const CAPAS_REPORTE = ["chkSE", "chkIncendios", "chkClima", "chkCP", "chkRios", "chkVias"];
+const CAPAS_REPORTE = ["chkSE", "chkIncendios", "chkClima", "chkRayos", "chkCP", "chkRios", "chkVias"];
 
 const imgRayo = new Image();
 imgRayo.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(RAYO_SVG);
@@ -184,6 +184,14 @@ function datosReporte() {
     else if (cf.lluvia > 0) add("media", `Lluvia en el punto de falla: ${cf.lluvia.toFixed(1)} mm/h (${cf.desc}).`);
     if (cf.ll24 >= 10) add("media", `Lluvia acumulada de ${cf.ll24.toFixed(1)} mm en 24 h: posibles accesos afectados o terreno inestable.`);
   }
+  const ry = E.rayos;
+  if (ry && E.grilla.horas) {
+    const proxMax = ry.serie.reduce((a, b) => (b.v > a.v ? b : a), ry.serie[0]);
+    if (ry.falla >= 60) add("alta", `Probabilidad muy alta de descargas atmosféricas en el punto de falla (${ry.falla} %). Postergar trabajos a la intemperie o en altura hasta que pase la tormenta.`);
+    else if (ry.falla >= 35) add("media", `Probabilidad alta de descargas atmosféricas en el punto de falla (${ry.falla} %). Vigilar la evolución antes de intervenir.`);
+    else if (proxMax.v >= 35) add("media", `La probabilidad de descargas en el punto de falla sube a ${proxMax.v} % hacia las ${proxMax.hora} h: planificar la intervención antes de esa hora.`);
+    if (ry.max >= 60 && ry.falla < 60) add("media", `Probabilidad muy alta de descargas (${ry.max} %) en el km ${fmtKm(ry.maxProg)} de la línea: posible recierre o nueva falla.`);
+  }
   if (climaLinea.tormenta) add("media", `Tormenta eléctrica en ${climaLinea.tormenta} de ${climaLinea.total} puntos muestreados a lo largo de la línea.`);
   const cp300 = cpFalla.filter((x) => x.df <= 300);
   if (cp300.length) add("media", `Centro poblado ${cp300[0].nombre} a ${Math.round(cp300[0].df)} m del punto de falla: coordinar con la población.`);
@@ -306,6 +314,7 @@ function crearPDF(R, mapas, logo) {
       ["d", [171, 71, 188], "Camino de herradura"], ["l", [41, 182, 246], "Río"], ["l", [128, 222, 234], "Acequia"],
       ["p", [211, 47, 47], "C. poblado hasta 100 m"], ["p", [245, 124, 0], "C. poblado 100 a 300 m"], ["p", [253, 216, 53], "C. poblado más de 300 m"],
       ["p", [214, 40, 40], "Incendio en atención"], ["p", [255, 152, 0], "Incendio cerrado"], ["p", [74, 20, 134], "Tormenta / lluvia"],
+      ["p", [255, 235, 59], "Prob. descarga moderada *"], ["p", [255, 152, 0], "Prob. descarga alta *"], ["p", [229, 57, 53], "Prob. descarga muy alta *"],
       ["f", [17, 17, 17], "Patio de subestación"], ["x", PDF.rojo, "Punto de falla estimado"],
     ];
     const col = 4, ancho = AU / col, filas = Math.ceil(items.length / col);
@@ -321,7 +330,10 @@ function crearPDF(R, mapas, logo) {
       if (tipo === "x") doc.circle(x + 3.5, yy - 1.1, 1.6, "F");
       color(PDF.texto); txt(t, x + 9, yy);
     });
-    y += filas * 4.6 + 2;
+    y += filas * 4.6 + 1;
+    fuente("italic", 7.2); color(PDF.gris);
+    txt("* La probabilidad de descargas se muestra solo en la vista general; sus valores están en la sección Probabilidad de descargas atmosféricas.", M, y);
+    y += 4;
   }
 
   // ---------------- Página 1: encabezado, datos, alertas, vista general
@@ -426,12 +438,28 @@ function crearPDF(R, mapas, logo) {
     ["Tormenta en la línea", `${R.climaLinea.tormenta} de ${R.climaLinea.total} puntos`], ["Lluvia en la línea", `${R.climaLinea.lluvia} de ${R.climaLinea.total} puntos`],
   ] : [["Estado", "No se pudo consultar el clima (sin conexión)."]]);
 
+  seccion("Probabilidad de descargas atmosféricas (índice estimado, Open-Meteo)");
+  const ry = E.rayos;
+  if (ry && E.grilla.horas) {
+    pares([
+      ["En el punto de falla", `${ry.falla} % (${ry.nivelFalla.toLowerCase()}) a las ${ry.hora} h`],
+      ["Máximo en la línea", `${ry.max} % (${ry.nivelMax.toLowerCase()}) en km ${fmtKm(ry.maxProg)}`],
+      ["Tramo alto o muy alto", `${fmtKm(ry.kmAlto)} km de ${fmtKm(ry.L)} km`],
+      ["Pronóstico actualizado", ry.actualizado.toLocaleString("es-PE", { hour: "2-digit", minute: "2-digit", day: "2-digit", month: "2-digit" })],
+    ]);
+    tabla(ry.serie.map((s, k) => ({ t: k === 0 ? `Ahora ${s.hora}` : s.hora, w: 20, der: true })),
+      [ry.serie.map((s) => `${s.v} % · ${nivelRayo(s.v).t}`)]);
+  } else {
+    pares([["Estado", "No se pudo consultar el pronóstico (sin conexión)."]]);
+  }
+
   seccion("Notas y fuentes");
   fuente("normal", 7.8); color(PDF.gris);
   const notas = [
     "Ubicación estimada por interpolación a lo largo del trazado real de la línea (KMZ), con origen en el pórtico de la subestación indicada. No considera la flecha del conductor; la distancia reportada por el relé puede diferir.",
     "Centros poblados, red vial, ríos y acequias: INEI (SIGE Atlas). Precisión aproximada de 5 a 10 m; algunos datos pueden no estar actualizados.",
     "Incendios: registro de emergencias de Bomberos Perú. Clima: Open-Meteo (condición actual y acumulado de 24 h). Mapas base: Mapbox / OpenStreetMap / Esri / CARTO.",
+    "Probabilidad de descargas atmosféricas: índice estimado a partir del pronóstico del modelo (CAPE, índice de elevación, inhibición convectiva, probabilidad de precipitación y código de tormenta) en una grilla de 0.25° (~28 km). Es un pronóstico, no una detección de rayos observados.",
   ];
   for (const n of notas) {
     const l = doc.splitTextToSize(limpiar("- " + n), AU);
@@ -474,8 +502,11 @@ async function generarReporte() {
     dibujarVias(); actualizarLeyenda();
 
     paso("Consultando incendios y clima");
-    await Promise.allSettled([cargarIncendios(), cargarClimaLinea(), cargarClimaFalla()]);
+    await Promise.allSettled([cargarIncendios(), cargarClimaLinea(), cargarClimaFalla(), cargarRayos()]);
     dibujarIncendios();
+    // En el mapa del reporte se muestra la probabilidad de descargas (más informativa) en lugar
+    // del mapa de calor de lluvia; los datos de lluvia siguen en las tablas.
+    mapa.setLayoutProperty("clima", "visibility", "none");
 
     paso("Calculando distancias y alertas");
     const R = datosReporte();
@@ -486,6 +517,9 @@ async function generarReporte() {
     const caja = cajaDe(c.pts.map((p) => [p[0], p[1]]));
     paso("Capturando vista general (1 de 3)");
     const general = await capturaConVista("calle", { limites: [[caja[0], caja[1]], [caja[2], caja[3]]] });
+    // En los detalles (zoom 14) la grilla de ~28 km cubriría todo el cuadro: se omite;
+    // el valor en el punto de falla figura en la tabla de probabilidad de descargas.
+    mapa.setLayoutProperty("rayos", "visibility", "none");
     paso("Capturando detalle satelital (2 de 3)");
     const satelite = await capturaConVista("satelite", { centro: E.falla, zoom: 14.3 });
     paso("Capturando detalle de calles (3 de 3)");
@@ -508,6 +542,8 @@ async function generarReporte() {
     for (const id of CAPAS_REPORTE) {
       if ($(id).checked !== previo.capas[id]) { $(id).checked = previo.capas[id]; $(id).dispatchEvent(new Event("change")); }
     }
+    mapa.setLayoutProperty("clima", "visibility", $("chkClima").checked ? "visible" : "none");
+    mapa.setLayoutProperty("rayos", "visibility", $("chkRayos").checked && E.grilla.horas ? "visible" : "none");
     E.vista = previo.vista;
     document.querySelectorAll(".segmentado button").forEach((b) => b.classList.toggle("activo", b.dataset.vista === E.vista));
     if (previo.oscuro !== E.oscuro) $("chkOscuro").click(); else cambiarMapaBase();

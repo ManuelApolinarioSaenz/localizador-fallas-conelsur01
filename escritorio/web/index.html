@@ -70,6 +70,13 @@
       <label class="capa"><input type="checkbox" id="chkClima"><span class="nombre">Lluvia y tormentas eléctricas</span><span class="fuente">Open-Meteo</span></label>
       <div id="panelClima" class="sub" hidden></div>
 
+      <label class="capa"><input type="checkbox" id="chkRayos"><span class="nombre">Probabilidad de descargas atmosféricas</span><span class="fuente">Open-Meteo</span></label>
+      <div id="panelRayos" class="sub" hidden>
+        <label class="etq" for="selHoraRayos">Hora del pronóstico</label>
+        <select id="selHoraRayos"></select>
+        <div id="resumenRayos"></div>
+      </div>
+
       <label class="capa"><input type="checkbox" id="chkCP"><span class="nombre">Centros poblados rurales</span><span class="fuente">INEI</span></label>
       <div id="panelCP" class="sub" hidden>
         <label class="etq" for="selRadioCP">Distancia máxima a la línea</label>

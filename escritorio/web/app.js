@@ -147,6 +147,13 @@ function crearCapas() {
   for (const id of ["lineas", "sel", "portico", "torres", "se", "hidro", "vias", "cp", "incendios", "clima"]) {
     mapa.addSource(id, { type: "geojson", data: vacio });
   }
+  crearGrillaRayos();
+  const G = E.grilla;
+  mapa.addSource("rayos", { type: "image", url: PIXEL_VACIO, coordinates: G.esquinas });
+  mapa.addLayer({ id: "rayos", type: "raster", source: "rayos", layout: { visibility: "none" },
+    // Más transparente al acercarse, para no tapar el detalle del terreno
+    paint: { "raster-opacity": ["interpolate", ["linear"], ["zoom"], 7, 0.85, 10, 0.6, 13, 0.35],
+      "raster-resampling": "linear", "raster-fade-duration": 0 } });
   mapa.addLayer({ id: "clima", type: "heatmap", source: "clima", layout: { visibility: "none" },
     paint: {
       "heatmap-weight": ["get", "peso"], "heatmap-intensity": 1.5, "heatmap-radius": 70,
@@ -327,6 +334,7 @@ function actualizarFalla() {
   actualizarCercanos();
   actualizarTablaCP();
   programarClimaFalla();
+  resumenRayos();
 }
 
 // ------------------------------------------------------------------ vías y ríos
@@ -536,6 +544,154 @@ async function cargarClimaFalla() {
   }
 }
 
+// ------------------------------------------------------------------ probabilidad de descargas atmosféricas
+/* Índice estimado (0-100 %) a partir de variables de inestabilidad del modelo meteorológico
+   (Open-Meteo): CAPE, índice de elevación (LI), inhibición convectiva (CIN), probabilidad de
+   precipitación y código de tormenta. Se calcula en una grilla de 0.25° alrededor de todas las
+   líneas, se interpola y se dibuja como mapa de calor. No es una detección de rayos. */
+const PIXEL_VACIO = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+const RAYOS_PASO = 0.25, RAYOS_RADIO = 0.375, RAYOS_HORAS = 7, RAYOS_REFRESCO_MS = 30 * 60000;
+const NIVELES_RAYO = [
+  { min: 60, t: "Muy alto", cls: "roja", color: "#B71C1C" },
+  { min: 35, t: "Alto", cls: "roja", color: "#F4511E" },
+  { min: 15, t: "Moderado", cls: "ambar", color: "#FBC02D" },
+  { min: 0, t: "Bajo", cls: "azul", color: "#9CCC65" },
+];
+const nivelRayo = (v) => NIVELES_RAYO.find((n) => v >= n.min);
+const RAMPA_RAYO = [  // [valor %, r, g, b, alfa]
+  [0, 255, 255, 255, 0], [8, 255, 245, 157, 0], [15, 255, 235, 59, 0.42], [35, 255, 152, 0, 0.58],
+  [60, 229, 57, 53, 0.68], [85, 127, 0, 0, 0.78], [100, 90, 0, 0, 0.8],
+];
+
+function indiceRayo(cape, li, cin, pp, wc) {
+  const cl = (v) => Math.max(0, Math.min(1, v));
+  const inestabilidad = 0.6 * cl(((cape ?? 0) - 100) / 1400) + 0.4 * cl((0.5 - (li ?? 0)) / 6.5);
+  const freno = 1 - 0.6 * cl(Math.abs(cin ?? 0) / 150);
+  let p = 100 * Math.pow(cl((pp ?? 0) / 100), 0.7) * inestabilidad * freno;
+  if (wc === 95) p = Math.max(p, 70);
+  if (wc === 96 || wc === 99) p = Math.max(p, 85);
+  return Math.round(Math.min(100, p));
+}
+
+function crearGrillaRayos() {
+  const P = RAYOS_PASO, r = Math.ceil(RAYOS_RADIO / P), celdas = new Map();
+  for (const c of D.circuitos) for (const p of c.pts) {
+    const cx = Math.round(p[0] / P), cy = Math.round(p[1] / P);
+    for (let i = -r; i <= r; i++) for (let j = -r; j <= r; j++) {
+      if (Math.hypot(i, j) * P <= RAYOS_RADIO + 1e-9) celdas.set(`${cx + i},${cy + j}`, { i: cx + i, j: cy + j });
+    }
+  }
+  const pts = [...celdas.values()];
+  const ix0 = Math.min(...pts.map((p) => p.i)), ix1 = Math.max(...pts.map((p) => p.i));
+  const iy0 = Math.min(...pts.map((p) => p.j)), iy1 = Math.max(...pts.map((p) => p.j));
+  const O = (ix0 - 0.5) * P, Es = (ix1 + 0.5) * P, N = (iy1 + 0.5) * P, S = (iy0 - 0.5) * P;
+  E.grilla = { pts, celdas, ix0, ix1, iy0, iy1, horas: null, actualizado: 0,
+    esquinas: [[O, N], [Es, N], [Es, S], [O, S]] };
+}
+
+/** Valor interpolado (bilineal) de la grilla en un punto; null fuera de la grilla. */
+function probEn(lon, lat, h, conPeso = false) {
+  const G = E.grilla, fx = lon / RAYOS_PASO, fy = lat / RAYOS_PASO;
+  const i0 = Math.floor(fx), j0 = Math.floor(fy), tx = fx - i0, ty = fy - j0;
+  let suma = 0, peso = 0;
+  for (const [di, dj, w] of [[0, 0, (1 - tx) * (1 - ty)], [1, 0, tx * (1 - ty)], [0, 1, (1 - tx) * ty], [1, 1, tx * ty]]) {
+    const c = G.celdas.get(`${i0 + di},${j0 + dj}`);
+    if (c && c.v && w > 0) { suma += c.v[h] * w; peso += w; }
+  }
+  const v = peso > 0 ? suma / peso : null;
+  return conPeso ? { v, peso } : v;
+}
+
+let temporizadorRayos = null;
+async function cargarRayos(forzar = false) {
+  const G = E.grilla;
+  if (!forzar && G.horas && Date.now() - G.actualizado < RAYOS_REFRESCO_MS) { dibujarRayos(); return; }
+  try {
+    const url = "https://api.open-meteo.com/v1/forecast?timezone=America%2FLima" +
+      `&hourly=cape,lifted_index,convective_inhibition,precipitation_probability,weather_code&forecast_hours=${RAYOS_HORAS}` +
+      `&latitude=${G.pts.map((p) => (p.j * RAYOS_PASO).toFixed(3)).join(",")}` +
+      `&longitude=${G.pts.map((p) => (p.i * RAYOS_PASO).toFixed(3)).join(",")}`;
+    const r = await fetch(url); if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    let res = await r.json(); if (!Array.isArray(res)) res = [res];
+    G.pts.forEach((p, k) => {
+      const h = (res[k] || {}).hourly || {};
+      p.v = (h.time || []).map((_, t) => indiceRayo(h.cape?.[t], h.lifted_index?.[t], h.convective_inhibition?.[t],
+        h.precipitation_probability?.[t], h.weather_code?.[t]));
+    });
+    G.horas = ((res[0] || {}).hourly || {}).time || [];
+    G.actualizado = Date.now(); G.error = null;
+    const sel = $("selHoraRayos"), previa = sel.value;
+    sel.innerHTML = G.horas.map((t, k) => `<option value="${k}">${k === 0 ? "Hora actual" : `Dentro de ${k} h`} (${t.slice(11, 16)})</option>`).join("");
+    if (previa && +previa < G.horas.length) sel.value = previa;
+  } catch (e) {
+    G.error = e.message;
+  }
+  dibujarRayos();
+}
+
+function dibujarRayos() {
+  const on = $("chkRayos").checked, G = E.grilla;
+  mapa.setLayoutProperty("rayos", "visibility", on && G.horas ? "visible" : "none");
+  if (!on) return;
+  if (G.horas) {
+    const h = +$("selHoraRayos").value || 0, S = 10;
+    const W = (G.ix1 - G.ix0 + 1) * S, H = (G.iy1 - G.iy0 + 1) * S;
+    const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+    const g = cv.getContext("2d"), img = g.createImageData(W, H);
+    for (let py = 0; py < H; py++) {
+      const lat = (G.iy1 + 0.5 - (py + 0.5) / S) * RAYOS_PASO;
+      for (let px = 0; px < W; px++) {
+        const lon = (G.ix0 - 0.5 + (px + 0.5) / S) * RAYOS_PASO;
+        const { v, peso } = probEn(lon, lat, h, true);
+        if (v == null) continue;
+        let k = 1; while (k < RAMPA_RAYO.length - 1 && RAMPA_RAYO[k][0] < v) k++;
+        const a = RAMPA_RAYO[k - 1], b = RAMPA_RAYO[k], w = Math.max(0, Math.min(1, (v - a[0]) / (b[0] - a[0])));
+        const o = (py * W + px) * 4;
+        for (let c = 0; c < 3; c++) img.data[o + c] = a[c + 1] + w * (b[c + 1] - a[c + 1]);
+        img.data[o + 3] = 255 * (a[4] + w * (b[4] - a[4])) * Math.min(1, peso * 1.6);
+      }
+    }
+    g.putImageData(img, 0, 0);
+    mapa.getSource("rayos").updateImage({ url: cv.toDataURL("image/png"), coordinates: G.esquinas });
+  }
+  resumenRayos();
+}
+
+function resumenRayos() {
+  const G = E.grilla;
+  if (!G || !$("chkRayos").checked) return;
+  const panel = $("resumenRayos");
+  if (!G.horas) {
+    panel.innerHTML = G.error
+      ? `<div class="alerta ambar"><b>Sin conexión</b>No se pudo consultar el pronóstico (${esc(G.error)}).</div>`
+      : `<div class="nota">Consultando pronóstico…</div>`;
+    return;
+  }
+  const h = +$("selHoraRayos").value || 0, c = circ(), L = largo(c);
+  const pf = probEn(E.falla[0], E.falla[1], h) ?? 0;
+  let max = -1, maxProg = 0, kmAlto = 0;
+  for (let k = 1; k < c.pts.length; k++) {
+    const a = c.pts[k - 1], b = c.pts[k];
+    const v = probEn((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, h) ?? 0;
+    if (v >= 35) kmAlto += b[2] - a[2];
+    if (v > max) { max = v; maxProg = (a[2] + b[2]) / 2; }
+  }
+  if (!E.desdeInicio) maxProg = L - maxProg;
+  const serie = G.horas.map((t, k) => ({ hora: t.slice(11, 16), v: Math.round(probEn(E.falla[0], E.falla[1], k) ?? 0) }));
+  const nf = nivelRayo(pf), nm = nivelRayo(max);
+  E.rayos = { h, hora: G.horas[h].slice(11, 16), falla: Math.round(pf), nivelFalla: nf.t, max: Math.round(max), nivelMax: nm.t,
+    maxProg, kmAlto, L, serie, actualizado: new Date(G.actualizado), error: G.error };
+  panel.innerHTML =
+    `<div class="alerta ${nf.cls}"><b>Punto de falla: ${Math.round(pf)} % · ${nf.t}</b>Probabilidad estimada de descargas atmosféricas a las ${E.rayos.hora} h.</div>` +
+    `<dl class="tabla-dato">${filasDato([
+      ["Máximo en la línea", `${Math.round(max)} % (${nm.t.toLowerCase()}) en km ${fmtKm(maxProg)}`],
+      ["Tramo alto o muy alto", `${fmtKm(kmAlto)} km de ${fmtKm(L)} km`],
+      ["Próximas horas en la falla", serie.map((s) => `${s.hora} ${s.v} %`).join(" · ")],
+      ["Actualizado", `${E.rayos.actualizado.toLocaleTimeString("es-PE", { hour: "2-digit", minute: "2-digit" })}${G.error ? " (último dato disponible)" : ""}`],
+    ])}</dl>` +
+    `<div class="nota">Índice estimado con CAPE, índice de elevación, inhibición convectiva, probabilidad de lluvia y código de tormenta del modelo. Se actualiza cada 30 min. No es una detección de rayos.</div>`;
+}
+
 // ------------------------------------------------------------------ subestaciones
 function dibujarSE() {
   const on = $("chkSE").checked;
@@ -569,6 +725,8 @@ function actualizarLeyenda() {
   if ($("chkCP").checked) h += grupo("Centros poblados rurales") + it(pt("#D32F2F"), "Hasta 100 m del eje") + it(pt("#F57C00"), "De 100 a 300 m") + it(pt("#FDD835"), "Más de 300 m");
   if ($("chkIncendios").checked) h += grupo("Incendios") + it(pt("#D62828"), "En atención") + it(pt("#FF9800"), "Cerrado");
   if ($("chkClima").checked) h += grupo("Clima") + it(pt("#4A1486"), "Tormenta eléctrica") + it(pt("#9E77C7"), "Lluvia");
+  if ($("chkRayos").checked) h += grupo("Prob. de descargas") + it(pt("#FFEB3B"), "Moderada (15–35 %)") +
+    it(pt("#FF9800"), "Alta (35–60 %)") + it(pt("#E53935"), "Muy alta (60–85 %)") + it(pt("#7F0000"), "Extrema (85 % o más)");
   $("leyenda").innerHTML = h;
 }
 
@@ -611,6 +769,16 @@ function conectarEventos() {
     if (e.target.checked) { $("panelClima").innerHTML = `<div class="nota">Consultando clima…</div>`; cargarClimaLinea(); cargarClimaFalla(); }
     actualizarLeyenda();
   });
+  $("chkRayos").addEventListener("change", (e) => {
+    $("panelRayos").hidden = !e.target.checked;
+    clearInterval(temporizadorRayos);
+    if (e.target.checked) {
+      resumenRayos(); cargarRayos();
+      temporizadorRayos = setInterval(() => cargarRayos(true), RAYOS_REFRESCO_MS);
+    } else dibujarRayos();
+    actualizarLeyenda();
+  });
+  $("selHoraRayos").addEventListener("change", dibujarRayos);
   $("chkCP").addEventListener("change", (e) => { $("panelCP").hidden = !e.target.checked; dibujarCP(); actualizarLeyenda(); });
   $("selRadioCP").addEventListener("change", dibujarCP);
   $("chkRios").addEventListener("change", () => { dibujarHidro(); actualizarCercanos(); actualizarLeyenda(); });
