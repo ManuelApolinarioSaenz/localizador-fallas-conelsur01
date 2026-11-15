@@ -633,9 +633,11 @@ async function iniciar() {
     return;
   }
   $("fechaDatos").textContent = `Datos al ${D.generado}`;
-  // Latido: el servidor local se cierra solo cuando el navegador deja de enviarlo
-  setInterval(() => fetch("/api/latido", { method: "POST" }).catch(() => {}), 20000);
-  fetch("/api/latido", { method: "POST" }).catch(() => {});
+  // Latido con el lanzador local: la app se apaga sola al cerrar la ventana
+  const ping = () => fetch("/api/ping", { cache: "no-store" }).catch(() => {});
+  ping(); setInterval(ping, 5000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) ping(); });
+  window.addEventListener("pagehide", () => { try { navigator.sendBeacon("/api/adios"); } catch (e) { /* nada */ } });
 
   mapa = new maplibregl.Map({
     container: "mapa",
