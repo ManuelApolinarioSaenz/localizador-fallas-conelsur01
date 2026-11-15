@@ -304,6 +304,7 @@ function actualizarFalla() {
   }
   const tramo = ant === pos || !pos ? `Torre ${ant[3]}` : `${ant[3]} – ${pos[3]}`;
   E.detalleTorres = tramo;
+  E.torresFalla = { ant, pos };
 
   $("kpiFalla").innerHTML = `${fmtKm(E.distM)}<small>km</small>`;
   $("tarjUbicacion").innerHTML = filasDato([
@@ -515,6 +516,11 @@ async function cargarClimaFalla() {
       "&current=precipitation,weather_code,wind_speed_10m&hourly=precipitation,weather_code&past_days=1&forecast_days=1&timezone=America%2FLima";
     const r = await fetch(url); if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const j = await r.json(), cur = j.current || {}, cod = cur.weather_code;
+    E.climaFalla = {
+      cod, desc: DESCRIPCION_CLIMA[cod] || `Código ${cod}`, lluvia: cur.precipitation || 0,
+      ll24: ((j.hourly || {}).precipitation || []).slice(0, 24).reduce((s, v) => s + (v || 0), 0),
+      viento: cur.wind_speed_10m ?? 0, tormenta: TORMENTA.has(cod),
+    };
     const desc = DESCRIPCION_CLIMA[cod] || `Código ${cod}`, lluvia = cur.precipitation || 0;
     const ll24 = ((j.hourly || {}).precipitation || []).slice(0, 24).reduce((s, v) => s + (v || 0), 0);
     const clase = TORMENTA.has(cod) ? "roja" : lluvia > 0 ? "ambar" : "azul";
@@ -635,6 +641,7 @@ async function iniciar() {
     container: "mapa",
     style: { version: 8, sources: {}, layers: [{ id: "fondo", type: "background", paint: { "background-color": "#E8ECF0" } }] },
     center: [-76.0, -11.5], zoom: 6, attributionControl: { compact: true },
+    preserveDrawingBuffer: true,  // necesario para capturar el mapa en el reporte PDF
   });
   mapa.addControl(new maplibregl.NavigationControl({ visualizePitch: false }), "top-right");
   mapa.addControl(new maplibregl.ScaleControl({ unit: "metric" }), "bottom-left");

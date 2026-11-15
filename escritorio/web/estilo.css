@@ -227,3 +227,23 @@ footer span::before { content: " · "; }
   .kpis { grid-template-columns: repeat(2, 1fr); }
   .mapa-card { min-height: 420px; }
 }
+
+/* ---------- reporte PDF ---------- */
+.boton-primario {
+  border: 0; border-radius: 6px; padding: 7px 14px; font: inherit; font-weight: 600; cursor: pointer;
+  background: var(--azul); color: #fff;
+}
+.boton-primario:hover { background: var(--azul-osc); }
+.boton-primario:disabled { opacity: .6; cursor: wait; }
+body.oscuro .boton-primario { background: #2F5BD3; }
+#generandoReporte {
+  position: fixed; inset: 0; z-index: 60; background: rgba(15, 20, 28, .45);
+  display: flex; align-items: center; justify-content: center;
+}
+#generandoReporte[hidden] { display: none; }
+#generandoReporte .caja {
+  background: var(--tarjeta); color: var(--texto); border-radius: 10px; padding: 22px 28px;
+  display: flex; align-items: center; gap: 14px; box-shadow: 0 8px 30px rgba(0, 0, 0, .3); font-size: 14px;
+}
+/* Durante la captura el mapa toma un tamaño fijo (proporción de la hoja) */
+.mapa-card.captura { position: fixed; left: 0; top: 0; width: 1500px; height: 900px; flex: none; z-index: 55; border-radius: 0; }

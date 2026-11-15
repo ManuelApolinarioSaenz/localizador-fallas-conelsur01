@@ -10,6 +10,7 @@
 </head>
 <body>
 <div id="cargando"><div class="spinner"></div><div>Cargando líneas y capas</div></div>
+<div id="generandoReporte" hidden><div class="caja"><div class="spinner"></div><div id="pasoReporte">Generando reporte</div></div></div>
 
 <header class="encabezado">
   <img src="logo.png" alt="CONELSUR" class="logo">
@@ -24,6 +25,7 @@
       <button data-vista="satelite">Satélite</button>
     </div>
     <label class="interruptor"><input type="checkbox" id="chkOscuro"><span class="pista"></span>Modo oscuro</label>
+    <button id="btnReporte" class="boton-primario" type="button">Generar reporte PDF</button>
   </div>
 </header>
 
@@ -108,6 +110,8 @@
 <footer>CONELSUR · Centro de Control de Operaciones de Transmisión · Sistema de Localización de Fallas SEIN<span id="fechaDatos"></span></footer>
 
 <script src="lib/maplibre-gl.js"></script>
+<script src="lib/jspdf.umd.min.js"></script>
 <script src="app.js"></script>
+<script src="reporte.js"></script>
 </body>
 </html>
