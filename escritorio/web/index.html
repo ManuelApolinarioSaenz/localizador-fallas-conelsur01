@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Localizador de Fallas</title>
+<link rel="icon" href="logo.png">
+<link rel="stylesheet" href="lib/maplibre-gl.css">
+<link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+<div id="cargando"><div class="spinner"></div><div>Cargando líneas y capas…</div></div>
+
+<header class="encabezado">
+  <img src="logo.png" alt="Conelsur" class="logo">
+  <div class="titulos">
+    <h1>Centro de Control: Localizador de Fallas Georreferenciado</h1>
+    <p>Herramienta analítica para la optimización de tiempos de respuesta post-falla</p>
+  </div>
+  <div class="controles-sup">
+    <div class="segmentado" role="radiogroup" aria-label="Vista del mapa">
+      <button data-vista="calle" class="activo">Calle</button>
+      <button data-vista="satelite">Satélite</button>
+    </div>
+    <label class="interruptor"><input type="checkbox" id="chkOscuro"><span></span>Oscuro</label>
+  </div>
+</header>
+
+<main class="principal">
+  <aside class="panel">
+    <h2>📋 Datos del evento</h2>
+
+    <label class="etq" for="selLinea">Línea</label>
+    <input id="buscarLinea" type="search" placeholder="Buscar línea… (ej. 2260, Talta)" autocomplete="off">
+    <select id="selLinea" size="1"></select>
+    <div id="infoLinea" class="nota"></div>
+
+    <div class="etq">Distancia medida desde</div>
+    <div id="extremos" class="radios"></div>
+
+    <label class="etq" for="numDist">Distancia de falla (km)</label>
+    <div class="fila-dist">
+      <input id="numDist" type="number" step="0.01" min="0">
+      <span id="maxDist" class="nota"></span>
+    </div>
+    <input id="rangoDist" type="range" min="0" step="1">
+
+    <div class="tarjeta verde" id="tarjUbicacion"></div>
+    <div class="tarjeta" id="tarjCercano" hidden></div>
+
+    <h3>Capas</h3>
+    <label class="chk"><input type="checkbox" id="chkSE"> Subestaciones (patio real)</label>
+    <label class="chk"><input type="checkbox" id="chkIncendios"> 🔥 Incendios activos (Bomberos Perú)</label>
+    <div id="panelIncendios" class="sub" hidden></div>
+    <label class="chk"><input type="checkbox" id="chkClima"> 🌩️ Clima (lluvia / riesgo de rayo)</label>
+    <div id="panelClima" class="sub" hidden></div>
+    <label class="chk"><input type="checkbox" id="chkCP"> 🏘️ Centros poblados rurales (INEI)</label>
+    <div id="panelCP" class="sub" hidden>
+      <label class="etq" for="selRadioCP">Distancia máxima a la línea</label>
+      <select id="selRadioCP">
+        <option value="100">100 m</option><option value="300">300 m</option><option value="500">500 m</option>
+        <option value="1000" selected>1 km</option><option value="2000">2 km</option><option value="5000">5 km</option>
+      </select>
+      <div id="resumenCP" class="nota"></div>
+      <div id="tablaCP"></div>
+    </div>
+    <label class="chk"><input type="checkbox" id="chkRios"> 🌊 Ríos y acequias (INEI)</label>
+    <label class="chk"><input type="checkbox" id="chkVias"> 🛣️ Vías (INEI)</label>
+    <div id="panelVias" class="sub" hidden>
+      <label class="chk"><input type="checkbox" data-via="Asfaltada" checked> Carretera asfaltada</label>
+      <label class="chk"><input type="checkbox" data-via="Afirmada" checked> Carretera afirmada</label>
+      <label class="chk"><input type="checkbox" data-via="Carrozable" checked> Camino carrozable</label>
+      <label class="chk"><input type="checkbox" data-via="Herradura" checked> Camino de herradura</label>
+    </div>
+  </aside>
+
+  <section class="contenido">
+    <div class="kpis">
+      <div class="kpi"><div class="valor" id="kpiTorres">–</div><div class="etiqueta">Torres en la línea</div></div>
+      <div class="kpi"><div class="valor" id="kpiLongitud">–</div><div class="etiqueta">Longitud total</div></div>
+      <div class="kpi"><div class="valor" id="kpiKv">–</div><div class="etiqueta">Nivel de tensión</div></div>
+      <div class="kpi"><div class="valor" id="kpiFalla">–</div><div class="etiqueta">Distancia de falla</div></div>
+    </div>
+    <div class="mapa-card">
+      <div id="mapa"></div>
+      <div id="leyenda" class="leyenda"></div>
+      <div id="avisoMapa" class="aviso-mapa" hidden></div>
+    </div>
+  </section>
+</main>
+<footer>CONELSUR — Centro de Control de Operaciones de Transmisión · Sistema de Localización de Fallas SEIN · <span id="fechaDatos"></span></footer>
+
+<script src="lib/maplibre-gl.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
