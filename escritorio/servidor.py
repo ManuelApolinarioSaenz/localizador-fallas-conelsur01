@@ -219,13 +219,31 @@ def navegador_app():
     return next((c for c in candidatos if c and os.path.isfile(c)), None)
 
 
+def geometria_ventana():
+    """Tamaño y posición de la ventana ajustados al área útil de la pantalla de cada PC."""
+    try:
+        class RECT(ctypes.Structure):
+            _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long), ("r", ctypes.c_long), ("b", ctypes.c_long)]
+        ctypes.windll.user32.SetProcessDPIAware()
+        area = RECT()
+        ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(area), 0)  # SPI_GETWORKAREA
+        aw, ah = area.r - area.l, area.b - area.t
+        escala = ctypes.windll.user32.GetDpiForSystem() / 96 if hasattr(ctypes.windll.user32, "GetDpiForSystem") else 1
+        # Chrome/Edge interpretan --window-size en píxeles lógicos (sin escala de Windows)
+        w, h = min(1500, int(aw / escala * 0.96)), min(940, int(ah / escala * 0.94))
+        x, y = int((aw / escala - w) / 2 + area.l / escala), int((ah / escala - h) / 2 + area.t / escala)
+        return [f"--window-size={w},{h}", f"--window-position={max(0, x)},{max(0, y)}"]
+    except Exception:  # noqa: BLE001
+        return ["--start-maximized"]
+
+
 def abrir_ventana(url):
     if os.environ.get("LOCALIZADOR_SIN_NAVEGADOR"):
         return
     exe = navegador_app()
     if exe:
         try:
-            subprocess.Popen([exe, f"--app={url}", "--window-size=1500,940", "--no-first-run"],
+            subprocess.Popen([exe, f"--app={url}", *geometria_ventana(), "--no-first-run"],
                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), close_fds=True)
             return
         except OSError:

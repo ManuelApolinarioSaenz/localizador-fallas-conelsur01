@@ -24,6 +24,7 @@ if not exist config.json (
 echo [2/2] Empaquetando el .exe...
 "%PYTHON%" -m PyInstaller --noconfirm --clean --onefile --noconsole --name LocalizadorFallas ^
   --icon "%~dp0icono.ico" ^
+  --version-file "%~dp0version_info.txt" ^
   --add-data "%~dp0web;web" --add-data "%~dp0config.json;." ^
   --exclude-module tkinter --exclude-module numpy --exclude-module pandas --exclude-module PIL ^
   --exclude-module streamlit --exclude-module pyarrow ^
