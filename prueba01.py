@@ -9,6 +9,7 @@ import numpy as np
 import requests
 
 from cargar_kmz import cargar_lineas_y_subestaciones_kmz, COLORES_POR_VOLTAJE
+from circuitos import construir_circuitos
 
 # =========================================================
 # 0. COLORES DE MARCA CONELSUR
@@ -531,6 +532,41 @@ def codigos_en_texto(texto):
     return set(int(n) for n in re.findall(r"\d+", str(texto)))
 
 
+def _numero_torre_texto(nombre):
+    m = re.search(r"\d+", str(nombre))
+    return m.group().lstrip("0") or "0" if m else None
+
+
+def anclar_restricciones_a_torres(df_rest_linea, df_linea):
+    """Pasa las progresivas del CSV a la distancia que usa la app.
+
+    Cada restricción del CSV empieza en su Torre_Origen (las progresivas se
+    midieron desde la primera torre, en el mismo sentido que la app). Como la
+    app ahora mide por el trazado real y desde el pórtico, se ancla cada fila
+    a la distancia de su torre en la app y se conserva el largo del tramo.
+    Si la torre no se encuentra (o el ancla discrepa > 500 m de lo esperado),
+    se usa la progresiva del CSV corregida con el desfase típico de la línea."""
+    if df_rest_linea.empty:
+        return df_rest_linea
+    dist_por_torre = {}
+    for torre, dist in zip(df_linea["Torre"], df_linea["Distancia_m"]):
+        if torre and not torre.startswith("Pórtico"):
+            dist_por_torre.setdefault(_numero_torre_texto(torre), dist)
+
+    inicio = df_rest_linea["Acumulado_Inicio_m"].astype(float)
+    largo = (df_rest_linea["Acumulado_Fin_m"].astype(float) - inicio).fillna(0).clip(lower=0)
+    anclas = df_rest_linea["Torre_Origen"].map(lambda t: dist_por_torre.get(_numero_torre_texto(t)))
+    desfases = (anclas - inicio).dropna()
+    desfase_tipico = float(desfases.median()) if not desfases.empty else 0.0
+    esperado = inicio + desfase_tipico
+    usar_ancla = anclas.notna() & ((anclas - esperado).abs() <= 500)
+    nuevo_inicio = anclas.where(usar_ancla, esperado)
+
+    df_rest_linea["Acumulado_Inicio_m"] = nuevo_inicio
+    df_rest_linea["Acumulado_Fin_m"] = nuevo_inicio + largo
+    return df_rest_linea
+
+
 def hex_a_rgb(color_hex, alpha=255):
     """Convierte '#RRGGBB' a [r, g, b, alpha] para las capas de PyDeck."""
     color_hex = color_hex.lstrip("#")
@@ -541,6 +577,17 @@ def hex_a_rgb(color_hex, alpha=255):
 # El TextLayer de deck.gl solo genera glifos para los caracteres de esta lista
 # (por defecto, un set ASCII básico) — sin tildes/eñe aquí, nombres como
 # "Huánuco" o "Ñaña" se ven con letras faltantes ("Missing character").
+# Ícono de rayo para la falla: círculo rojo con rayo amarillo (SVG embebido,
+# sin depender de archivos externos).
+_SVG_RAYO = (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 64 64">'
+    '<circle cx="32" cy="32" r="29" fill="#C62828" stroke="#FFFFFF" stroke-width="4"/>'
+    '<path d="M36 8 L17 36 L30 36 L26 56 L47 26 L34 26 Z" fill="#FFD600" '
+    'stroke="#1A1A1A" stroke-width="2.5" stroke-linejoin="round"/>'
+    '</svg>'
+)
+ICONO_RAYO_URL = "data:image/svg+xml;base64," + base64.b64encode(_SVG_RAYO.encode()).decode()
+
 JUEGO_CARACTERES_TEXTO = (
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
     "0123456789 .,:;()/_-·–—'\"°%ÁÉÍÓÚÑáéíóúñÜü"
@@ -740,17 +787,35 @@ else:
     filas_descartadas = filas_antes - len(df)
     fuente_datos = "excel"
 
-datos_lineas = {}
-for linea, grupo in df.groupby("Linea"):
-    grupo = grupo.reset_index(drop=True)
-    grupo["Distancia_m"] = 0.0
-    for i in range(1, len(grupo)):
-        d = distancia_m(
-            grupo.loc[i - 1, "Latitud"], grupo.loc[i - 1, "Longitud"],
-            grupo.loc[i, "Latitud"], grupo.loc[i, "Longitud"],
-        )
-        grupo.loc[i, "Distancia_m"] = grupo.loc[i - 1, "Distancia_m"] + d
-    datos_lineas[linea] = grupo
+if fuente_datos == "kmz":
+    # Cada circuito junta todos los archivos que lo contienen (tramo
+    # compartido de doble circuito + bajadas propias + subterráneo), se mide
+    # a lo largo del trazado real y arranca en el pórtico de la SE de cada
+    # extremo. Ver circuitos.py.
+    datos_lineas, partes_circuito, extremos_linea, info_circuitos = construir_circuitos(
+        df, info_lineas, trazados_lineas, subestaciones
+    )
+    for _nombre, _info in info_circuitos.items():
+        info_lineas.setdefault(_nombre, _info)
+else:
+    datos_lineas = {}
+    for linea, grupo in df.groupby("Linea"):
+        grupo = grupo.reset_index(drop=True)
+        grupo["Distancia_m"] = 0.0
+        for i in range(1, len(grupo)):
+            d = distancia_m(
+                grupo.loc[i - 1, "Latitud"], grupo.loc[i - 1, "Longitud"],
+                grupo.loc[i, "Latitud"], grupo.loc[i, "Longitud"],
+            )
+            grupo.loc[i, "Distancia_m"] = grupo.loc[i - 1, "Distancia_m"] + d
+        datos_lineas[linea] = grupo
+    partes_circuito = {n: [n] for n in datos_lineas}
+    extremos_linea = {
+        n: tuple(f"SE {s.title()}" for s in SUBESTACIONES_POR_LINEA[codigo_de_nombre_linea(n)])
+        if codigo_de_nombre_linea(n) in SUBESTACIONES_POR_LINEA else (None, None)
+        for n in datos_lineas
+    }
+    info_circuitos = {}
 
 # Si se cargó desde el Excel (sin KMZ), las subestaciones se siguen
 # aproximando con el diccionario de origen/destino, como antes.
@@ -788,6 +853,23 @@ with col_control:
         st.caption(f"⚡ {_info_sel['voltaje_kv']} kV · {_info_sel.get('tipo') or '—'}")
 
     distancia_max_km = df_linea["Distancia_m"].max() / 1000
+    longitud_linea_m = df_linea["Distancia_m"].max()
+
+    # Extremo desde el que mide el relé. La distancia interna siempre se
+    # cuenta desde el inicio de la línea; si el relé está en el otro
+    # extremo, se convierte: desde_inicio = longitud - distancia_ingresada.
+    _torres_con_nombre = [t for t in df_linea["Torre"] if t]
+    _se_ini, _se_fin = extremos_linea.get(linea_seleccionada, (None, None))
+    etiqueta_inicio = _se_ini or f"Inicio de la línea ({_torres_con_nombre[0] if _torres_con_nombre else '—'})"
+    etiqueta_fin = _se_fin or f"Fin de la línea ({_torres_con_nombre[-1] if _torres_con_nombre else '—'})"
+    if etiqueta_fin == etiqueta_inicio:
+        etiqueta_fin += " (extremo final)"
+    extremo_medicion = st.radio(
+        "Distancia medida desde:", [etiqueta_inicio, etiqueta_fin],
+        help="Subestación donde está el relé que reportó la distancia de falla. "
+             "La distancia cuenta desde el pórtico de esa subestación.",
+    )
+    medido_desde_inicio = extremo_medicion == etiqueta_inicio
 
     distancia_falla_km = st.number_input(
         f"Distancia de falla (0 a {distancia_max_km:.2f} km):",
@@ -797,6 +879,11 @@ with col_control:
         step=0.1,
     )
     distancia_falla_m = distancia_falla_km * 1000
+    # Distancia equivalente contada desde el inicio de la línea (la que usan
+    # la interpolación, las torres y las restricciones).
+    distancia_desde_inicio_m = (
+        distancia_falla_m if medido_desde_inicio else longitud_linea_m - distancia_falla_m
+    )
 
     if restricciones_disponibles:
         mostrar_restricciones = st.checkbox("Mostrar restricciones en el mapa", value=False)
@@ -883,7 +970,7 @@ with col_control:
     # ---------------------------------------------------
     # Ubicación de la falla
     # ---------------------------------------------------
-    lat_falla, lon_falla = punto_en_distancia(df_linea, distancia_falla_m)
+    lat_falla, lon_falla = punto_en_distancia(df_linea, distancia_desde_inicio_m)
 
     if len(df_linea) < 2:
         st.error(
@@ -892,13 +979,18 @@ with col_control:
         )
         st.stop()
 
-    df_antes = df_linea[df_linea["Distancia_m"] <= distancia_falla_m]
-    df_despues = df_linea[df_linea["Distancia_m"] > distancia_falla_m]
+    # Solo puntos con nombre (torres y pórticos); los vértices intermedios
+    # del trazado sin torre marcada no sirven de referencia en campo.
+    _df_nombradas = df_linea[df_linea["Torre"] != ""]
+    if len(_df_nombradas) < 2:
+        _df_nombradas = df_linea
+    df_antes = _df_nombradas[_df_nombradas["Distancia_m"] <= distancia_desde_inicio_m]
+    df_despues = _df_nombradas[_df_nombradas["Distancia_m"] > distancia_desde_inicio_m]
     if df_despues.empty:
-        t_anterior = df_antes.iloc[-2] if len(df_antes) >= 2 else df_linea.iloc[-2]
-        t_posterior = df_antes.iloc[-1] if not df_antes.empty else df_linea.iloc[-1]
+        t_anterior = df_antes.iloc[-2] if len(df_antes) >= 2 else _df_nombradas.iloc[-2]
+        t_posterior = df_antes.iloc[-1] if not df_antes.empty else _df_nombradas.iloc[-1]
     else:
-        t_anterior = df_antes.iloc[-1] if not df_antes.empty else df_linea.iloc[0]
+        t_anterior = df_antes.iloc[-1] if not df_antes.empty else _df_nombradas.iloc[0]
         t_posterior = df_despues.iloc[0]
 
     if t_anterior["Torre"] == t_posterior["Torre"]:
@@ -909,7 +1001,8 @@ with col_control:
     st.markdown(
         f'<div class="ubicacion-card">'
         f'<div class="titulo">📍 Ubicación estimada</div>'
-        f'<div class="detalle">Coordenadas: {lat_falla:.5f}, {lon_falla:.5f}<br>{ubicacion_detalle}</div>'
+        f'<div class="detalle">Km {distancia_falla_km:.2f} desde {extremo_medicion}<br>'
+        f'Coordenadas: {lat_falla:.5f}, {lon_falla:.5f}<br>{ubicacion_detalle}</div>'
         f'</div>',
         unsafe_allow_html=True,
     )
@@ -921,7 +1014,7 @@ with col_control:
     if restricciones_disponibles:
         codigo_linea_actual = codigo_de_nombre_linea(linea_seleccionada)
         mask = df_rest["Codigo_Linea"].apply(lambda s: codigo_linea_actual in codigos_en_texto(s))
-        df_rest_linea = df_rest[mask].copy()
+        df_rest_linea = anclar_restricciones_a_torres(df_rest[mask].copy(), df_linea)
 
         if not df_rest_linea.empty:
             puntos_ini = df_rest_linea["Acumulado_Inicio_m"].apply(lambda d: punto_en_distancia(df_linea, d))
@@ -935,8 +1028,8 @@ with col_control:
         st.subheader("🔎 Verificación en el punto de falla")
         margen_m = 25  # tolerancia de interpolación
         en_rango = df_rest_linea[
-            (df_rest_linea["Acumulado_Inicio_m"] - margen_m <= distancia_falla_m)
-            & (df_rest_linea["Acumulado_Fin_m"] + margen_m >= distancia_falla_m)
+            (df_rest_linea["Acumulado_Inicio_m"] - margen_m <= distancia_desde_inicio_m)
+            & (df_rest_linea["Acumulado_Fin_m"] + margen_m >= distancia_desde_inicio_m)
         ]
 
         if en_rango.empty:
@@ -990,7 +1083,7 @@ with col_mapa:
     # ---------------------------------------------------
     # Tarjetas de indicadores (KPI) de la línea seleccionada
     # ---------------------------------------------------
-    n_torres = len(df_linea)
+    n_torres = int(((df_linea["Torre"] != "") & ~df_linea["Torre"].str.startswith("Pórtico")).sum())
     longitud_km = df_linea["Distancia_m"].max() / 1000
     n_restricciones = len(df_rest_linea) if not df_rest_linea.empty else 0
 
@@ -1043,14 +1136,17 @@ with col_mapa:
         return [coords_lonlat[i:i + 2] for i in range(0, len(coords_lonlat) - 1, 2)]
 
     def _recorridos_linea(nombre_linea, df_torres_linea):
-        """Recorrido a dibujar, en [lon, lat]: el trazado real del KMZ (sus
-        <LineString>) si existe; si no, la unión de las torres en orden.
-        Antes siempre se unían las torres, y cuando su orden no coincidía
-        con el recorrido real aparecían líneas rectas que cruzaban el mapa."""
-        trazados = trazados_lineas.get(nombre_linea)
-        if trazados:
-            return [[[lon, lat] for lat, lon in cadena] for cadena in trazados]
-        return [df_torres_linea[["Longitud", "Latitud"]].values.tolist()]
+        """Recorridos a dibujar, como [(coords [lon, lat], nombre_parte)]:
+        el trazado real de cada archivo KMZ que forma el circuito (así el
+        tramo subterráneo conserva su estilo punteado); si no hay trazado,
+        la unión de las torres en orden."""
+        recorridos = []
+        for parte in partes_circuito.get(nombre_linea, [nombre_linea]):
+            for cadena in trazados_lineas.get(parte) or []:
+                recorridos.append(([[lon, lat] for lat, lon in cadena], parte))
+        if not recorridos:
+            recorridos.append((df_torres_linea[["Longitud", "Latitud"]].values.tolist(), nombre_linea))
+        return recorridos
 
     # ---------------------------------------------------
     # Todas las demás líneas, coloreadas por nivel de tensión
@@ -1064,8 +1160,8 @@ with col_mapa:
         }
         for nombre_linea, grupo_linea in datos_lineas.items()
         if nombre_linea != linea_seleccionada
-        for recorrido in _recorridos_linea(nombre_linea, grupo_linea)
-        for tramo in _tramos_linea(recorrido, nombre_linea)
+        for recorrido, parte in _recorridos_linea(nombre_linea, grupo_linea)
+        for tramo in _tramos_linea(recorrido, parte)
     ]
     capas_pydeck.append(
         pdk.Layer(
@@ -1091,9 +1187,19 @@ with col_mapa:
             "nombre": f"Línea: {linea_seleccionada}",
             "info": _info_voltaje_linea(linea_seleccionada),
         }
-        for recorrido in _recorridos_linea(linea_seleccionada, df_linea)
-        for tramo in _tramos_linea(recorrido, linea_seleccionada)
+        for recorrido, parte in _recorridos_linea(linea_seleccionada, df_linea)
+        for tramo in _tramos_linea(recorrido, parte)
     ]
+    # Vanos de llegada a los pórticos (se miden, pero no vienen en el KMZ)
+    for _i in (0, len(df_linea) - 1):
+        _fila = df_linea.iloc[_i]
+        if str(_fila["Torre"]).startswith("Pórtico") and len(df_linea) > 1:
+            _vecina = df_linea.iloc[1 if _i == 0 else _i - 1]
+            dato_linea_sel.append({
+                "path": [[_vecina["Longitud"], _vecina["Latitud"]], [_fila["Longitud"], _fila["Latitud"]]],
+                "nombre": f"Vano de llegada — {_fila['Torre']}",
+                "info": "",
+            })
     capas_pydeck.append(
         pdk.Layer(
             "PathLayer",
@@ -1114,9 +1220,14 @@ with col_mapa:
         {
             "position": [fila["Longitud"], fila["Latitud"]],
             "nombre": f"Torre {fila['Torre']}",
-            "info": f" — {linea_seleccionada} · Km {fila['Distancia_m'] / 1000:.2f}",
+            "info": (
+                f" — {linea_seleccionada} · Km "
+                f"{(fila['Distancia_m'] if medido_desde_inicio else longitud_linea_m - fila['Distancia_m']) / 1000:.2f}"
+                f" desde {extremo_medicion}"
+            ),
         }
         for _, fila in df_linea.iterrows()
+        if fila["Torre"]
     ]
     capas_pydeck.append(
         pdk.Layer(
@@ -1322,24 +1433,39 @@ with col_mapa:
     # ---------------------------------------------------
     # Marcador de la falla estimada
     # ---------------------------------------------------
+    # Símbolo de rayo con tamaño fijo en PÍXELES: antes era un círculo de
+    # 180 m de radio, que al acercar el mapa tapaba media pantalla.
     dato_falla = [
         {
             "position": [lon_falla, lat_falla],
-            "nombre": f"Falla estimada — Km {distancia_falla_km:.2f}",
-            "info": "",
+            "nombre": f"FALLA  Km {distancia_falla_km:.2f}",
+            "info": f" — desde {extremo_medicion} · {ubicacion_detalle.replace('<b>', '').replace('</b>', '')}",
+            "icono": {"url": ICONO_RAYO_URL, "width": 128, "height": 128, "anchorY": 64},
         }
     ]
+    # Halo para que el rayo destaque sobre la imagen satelital
     capas_pydeck.append(
         pdk.Layer(
             "ScatterplotLayer",
             data=dato_falla,
             get_position="position",
-            get_fill_color=hex_a_rgb(VERDE_CONELSUR),
-            get_line_color=[255, 255, 255, 255],
+            get_fill_color=[229, 57, 53, 70],
+            get_line_color=[229, 57, 53, 200],
             line_width_min_pixels=2,
             stroked=True,
-            get_radius=180,
-            radius_min_pixels=8,
+            get_radius=30,
+            radius_units=pdk.types.String("pixels"),
+            pickable=False,
+        )
+    )
+    capas_pydeck.append(
+        pdk.Layer(
+            "IconLayer",
+            data=dato_falla,
+            get_position="position",
+            get_icon="icono",
+            get_size=44,
+            size_units=pdk.types.String("pixels"),
             pickable=True,
         )
     )
@@ -1350,12 +1476,16 @@ with col_mapa:
             character_set=pdk.types.String(JUEGO_CARACTERES_TEXTO),
             get_position="position",
             get_text="nombre",
-            get_size=13,
-            get_color=hex_a_rgb(VERDE_CONELSUR_OSCURO),
-            outline_width=3,
-            outline_color=[255, 255, 255, 230],
-            font_settings={"sdf": True},
-            get_pixel_offset=[0, -18],
+            get_size=17,
+            size_units=pdk.types.String("pixels"),
+            get_color=[255, 255, 255, 255],
+            font_weight=700,
+            background=True,
+            get_background_color=[198, 40, 40, 235],
+            background_padding=[8, 4, 8, 4],
+            get_pixel_offset=[0, -44],
+            get_text_anchor=pdk.types.String("middle"),
+            get_alignment_baseline=pdk.types.String("bottom"),
             font_family=pdk.types.String("Poppins, Arial, sans-serif"),
         )
     )
