@@ -19,7 +19,7 @@ import webbrowser
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 NOMBRE = "localizador-fallas-conelsur"
-PUERTO_PREFERIDO = 8765
+PUERTO_PREFERIDO = int(os.environ.get("LOCALIZADOR_PUERTO", 8765))
 URL_BOMBEROS = ("https://docs.google.com/spreadsheets/d/"
                 "1n_YelAX4D_mFQbXLduWTpjFLfzYOElzSYM8FiiWBhto/export?format=csv")
 CIERRE_SIN_LATIDO_S = int(os.environ.get("LOCALIZADOR_CIERRE_S", 180))  # navegador cerrado -> 3 min

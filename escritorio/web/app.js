@@ -90,6 +90,7 @@ const fmtKm = (m) => (m / 1000).toFixed(2);
 const fmtDist = (m) => (m >= 1000 ? `${(m / 1000).toFixed(2)} km` : `${Math.round(m)} m`);
 const norm = (s) => String(s).normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
 const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const filasDato = (filas) => filas.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("");
 const circ = () => D.circuitos[E.idx];
 const largo = (c = circ()) => c.pts[c.pts.length - 1][2];
 const desdeInicioM = () => (E.desdeInicio ? E.distM : largo() - E.distM);
@@ -191,7 +192,7 @@ function crearCapas() {
   mapa.getSource("lineas").setData(fc(D.partes.map((p, i) => linea(p.c, {
     color: COLORES_KV[p.kv] || COLOR_SIN_KV, s: p.s,
     nombre: (nombresPorParte[i] || ["Línea"]).slice(0, 2).join(" / "),
-    info: `${p.kv ? p.kv + " kV" : ""}${p.s ? " · Subterránea" : ""}`,
+    info: [p.kv ? `${p.kv} kV` : null, p.s ? "Tramo subterráneo" : "Tramo aéreo"].filter(Boolean).join(" · "),
   }))));
   mapa.getSource("se").setData(fc(D.subestaciones.filter((s) => s.pol.length > 2).map((s) => ({
     type: "Feature", properties: { nombre: s.n, info: s.kv ? `${s.kv} kV` : "" },
@@ -207,7 +208,7 @@ function crearCapas() {
     mapa.getCanvas().style.cursor = f ? "pointer" : "";
     if (!f) { popup.remove(); return; }
     const p = f.properties;
-    popup.setLngLat(ev.lngLat).setHTML(`<b>${esc(p.nombre)}</b>${p.info ? " — " + esc(p.info) : ""}`).addTo(mapa);
+    popup.setLngLat(ev.lngLat).setHTML(`<b>${esc(p.nombre)}</b>${p.info ? `<span class="det">${esc(p.info)}</span>` : ""}`).addTo(mapa);
   });
   mapa.on("mouseout", () => popup.remove());
 }
@@ -230,7 +231,8 @@ function llenarSelector(filtro = "") {
 function seleccionarLinea(i) {
   E.idx = i;
   const c = circ(), L = largo(c);
-  $("infoLinea").textContent = `⚡ ${c.kv ? c.kv + " kV" : "kV no identificado"} · ${c.tipo || "—"}`;
+  $("infoLinea").innerHTML = [c.kv ? `${c.kv} kV` : "Tensión no identificada", c.tipo]
+    .filter(Boolean).map((t) => `<span class="chip">${esc(t)}</span>`).join("");
   const [a, b] = etiquetasExtremos(c);
   E.desdeInicio = true;
   $("extremos").innerHTML = [a, b].map((t, k) =>
@@ -240,21 +242,21 @@ function seleccionarLinea(i) {
   }));
   $("numDist").max = (L / 1000).toFixed(2);
   $("rangoDist").max = Math.round(L);
-  $("maxDist").textContent = `de 0 a ${fmtKm(L)} km`;
+  $("maxDist").textContent = `Máx. ${fmtKm(L)} km`;
   E.distM = L / 2;
 
   const nombradas = c.pts.filter((p) => p[3] && !p[3].startsWith("Pórtico"));
   $("kpiTorres").textContent = nombradas.length;
-  $("kpiLongitud").textContent = `${(L / 1000).toFixed(1)} km`;
-  $("kpiKv").textContent = c.kv ? `${c.kv} kV` : "—";
+  $("kpiLongitud").innerHTML = `${(L / 1000).toFixed(2)}<small>km</small>`;
+  $("kpiKv").innerHTML = c.kv ? `${c.kv}<small>kV</small>` : "—";
 
   const coords = c.pts.map((p) => [p[0], p[1]]);
-  mapa.getSource("sel").setData(fc([linea(coords, { nombre: `Línea: ${c.n}`, info: c.kv ? `${c.kv} kV` : "" })]));
+  mapa.getSource("sel").setData(fc([linea(coords, { nombre: c.n, info: `Línea seleccionada${c.kv ? ` · ${c.kv} kV` : ""}` })]));
   const vanos = [];
   for (const k of [0, c.pts.length - 1]) {
     if (c.pts[k][3] && c.pts[k][3].startsWith("Pórtico") && c.pts.length > 1) {
       const v = c.pts[k === 0 ? 1 : k - 1];
-      vanos.push(linea([[v[0], v[1]], [c.pts[k][0], c.pts[k][1]]], { nombre: `Vano de llegada — ${c.pts[k][3]}` }));
+      vanos.push(linea([[v[0], v[1]], [c.pts[k][0], c.pts[k][1]]], { nombre: "Vano de llegada", info: c.pts[k][3] }));
     }
   }
   mapa.getSource("portico").setData(fc(vanos));
@@ -277,7 +279,7 @@ function actualizarCapasDeLinea() {
   const c = circ(), L = largo(c);
   mapa.getSource("torres").setData(fc(c.pts.filter((p) => p[3]).map((p) => punto([p[0], p[1]], {
     nombre: p[3].startsWith("Pórtico") ? p[3] : `Torre ${p[3]}`,
-    info: `Km ${fmtKm(E.desdeInicio ? p[2] : L - p[2])} desde ${extremoActual()}`,
+    info: `${fmtKm(E.desdeInicio ? p[2] : L - p[2])} km desde ${extremoActual()}`,
   }))));
   dibujarVias(); dibujarHidro(); dibujarCP(); dibujarIncendios();
 }
@@ -300,14 +302,17 @@ function actualizarFalla() {
     if (nom[k][2] <= dI) ant = nom[k];
     if (nom[k][2] > dI) { pos = nom[k]; break; }
   }
-  const detalle = ant === pos || !pos ? `Falla exacta en torre <b>${esc(ant[3])}</b>`
-    : `Entre torres <b>${esc(ant[3])}</b> y <b>${esc(pos[3])}</b>`;
-  E.detalleTorres = detalle.replace(/<\/?b>/g, "");
+  const tramo = ant === pos || !pos ? `Torre ${ant[3]}` : `${ant[3]} – ${pos[3]}`;
+  E.detalleTorres = tramo;
 
-  $("kpiFalla").textContent = `${fmtKm(E.distM)} km`;
-  $("tarjUbicacion").innerHTML = `<div class="titulo">📍 Ubicación estimada</div>` +
-    `Km ${fmtKm(E.distM)} desde ${esc(extremoActual())}<br>` +
-    `Coordenadas: ${lat.toFixed(5)}, ${lon.toFixed(5)}<br>${detalle}`;
+  $("kpiFalla").innerHTML = `${fmtKm(E.distM)}<small>km</small>`;
+  $("tarjUbicacion").innerHTML = filasDato([
+    ["Medido desde", esc(extremoActual())],
+    ["Progresiva", `${fmtKm(E.distM)} km`],
+    ["Entre torres", esc(tramo)],
+    ["Latitud", lat.toFixed(5)],
+    ["Longitud", lon.toFixed(5)],
+  ]);
 
   if (!marcadorFalla) {
     const el = document.createElement("div");
@@ -316,7 +321,7 @@ function actualizarFalla() {
     marcadorFalla = new maplibregl.Marker({ element: el, anchor: "bottom", offset: [0, 23] }).setLngLat([lon, lat]).addTo(mapa);
   }
   marcadorFalla.setLngLat([lon, lat]);
-  marcadorFalla.getElement().querySelector(".etiqueta-falla").textContent = `FALLA  Km ${fmtKm(E.distM)}`;
+  marcadorFalla.getElement().querySelector(".etiqueta-falla").textContent = `FALLA · ${fmtKm(E.distM)} km`;
 
   actualizarCercanos();
   actualizarTablaCP();
@@ -333,7 +338,7 @@ function dibujarVias() {
   const on = $("chkVias").checked, tipos = tiposViaActivos();
   ["vias", "vias-herradura"].forEach((id) => mapa.setLayoutProperty(id, "visibility", on ? "visible" : "none"));
   mapa.getSource("vias").setData(fc(on ? E.viasCaja.filter((v) => tipos.has(v.t)).map((v) => linea(v.p, {
-    t: v.t, nombre: NOMBRES_VIAS[v.t], info: "INEI", color: colorVia(v.t),
+    t: v.t, nombre: NOMBRES_VIAS[v.t], info: "Fuente: INEI", color: colorVia(v.t),
     ancho: v.t === "Asfaltada" ? 4 : v.t === "Afirmada" ? 3 : 2,
   })) : []));
 }
@@ -341,7 +346,7 @@ function dibujarHidro() {
   const on = $("chkRios").checked;
   mapa.setLayoutProperty("hidro", "visibility", on ? "visible" : "none");
   mapa.getSource("hidro").setData(fc(on ? E.hidroCaja.map((v) => linea(v.p, {
-    nombre: v.n || v.t, info: `${v.t} · INEI`, color: COLORES_HIDRO[v.t], ancho: v.t === "Río" ? 3 : 2,
+    nombre: v.n ? v.n.replace(/^Rio /, "Río ") : v.t, info: `${v.t} · Fuente: INEI`, color: COLORES_HIDRO[v.t], ancho: v.t === "Río" ? 3 : 2,
   })) : []));
 }
 function masCercano(lista) {
@@ -359,17 +364,17 @@ function actualizarCercanos() {
     for (const t of Object.keys(NOMBRES_VIAS)) {
       if (!tipos.has(t)) continue;
       const m = masCercano(E.viasCaja.filter((v) => v.t === t));
-      if (m.e && m.d <= 5000) filas.push(`${NOMBRES_VIAS[t]}: <b>${fmtDist(m.d)}</b>`);
+      if (m.e && m.d <= 5000) filas.push([NOMBRES_VIAS[t], fmtDist(m.d)]);
     }
   }
   if ($("chkRios").checked) {
     for (const t of ["Río", "Acequia"]) {
       const m = masCercano(E.hidroCaja.filter((v) => v.t === t));
-      if (m.e && m.d <= 5000) filas.push(`${t}${m.e.n ? ` (${esc(m.e.n)})` : ""}: <b>${fmtDist(m.d)}</b>`);
+      if (m.e && m.d <= 5000) filas.push([t === "Río" && m.e.n ? esc(m.e.n.replace(/^Rio /, "Río ")) : t, fmtDist(m.d)]);
     }
   }
-  $("tarjCercano").hidden = !filas.length;
-  $("tarjCercano").innerHTML = `<div class="titulo">🧭 Más cercano al punto de falla</div>${filas.join("<br>")}`;
+  $("bloqueCercano").hidden = !filas.length;
+  $("tarjCercano").innerHTML = filasDato(filas);
 }
 
 // ------------------------------------------------------------------ centros poblados
@@ -390,12 +395,12 @@ function dibujarCP() {
   mapa.setLayoutProperty("cp", "visibility", on ? "visible" : "none");
   const lista = on ? E.cpLinea.filter((x) => x.d <= radioCP()) : [];
   mapa.getSource("cp").setData(fc(lista.map((x) => punto([x.lon, x.lat], {
-    nombre: `CP ${x.nombre}`,
-    info: `${x.distrito}, ${x.provincia} · a ${Math.round(x.d)} m del eje · Km ${fmtKm(E.desdeInicio ? x.prog : L - x.prog)} desde ${extremoActual()}`,
+    nombre: `Centro poblado ${x.nombre}`,
+    info: `${x.distrito}, ${x.provincia} · ${Math.round(x.d)} m del eje · ${fmtKm(E.desdeInicio ? x.prog : L - x.prog)} km desde ${extremoActual()}`,
     color: x.d <= 100 ? "#D32F2F" : x.d <= 300 ? "#F57C00" : "#FDD835",
   }))));
   const etq = radioCP() < 1000 ? `${radioCP()} m` : `${radioCP() / 1000} km`;
-  $("resumenCP").textContent = `${lista.length} centro(s) poblado(s) rural(es) a ≤ ${etq} de esta línea · Fuente: INEI`;
+  $("resumenCP").textContent = `${lista.length} ${lista.length === 1 ? "centro poblado rural" : "centros poblados rurales"} a ${etq} o menos de la línea.`;
   actualizarTablaCP();
 }
 function actualizarTablaCP() {
@@ -404,8 +409,8 @@ function actualizarTablaCP() {
     .map((x) => ({ ...x, df: haversine(x.lon, x.lat, E.falla[0], E.falla[1]) }))
     .filter((x) => x.df <= 3000).sort((a, b) => a.df - b.df);
   $("tablaCP").innerHTML = !cerca.length
-    ? `<div class="alerta azul">Ningún centro poblado rural a menos de 3 km del punto de falla.</div>`
-    : `<div class="etq">Cerca de la falla (≤ 3 km)</div><table class="tabla"><tr><th>Centro poblado</th><th>Distrito</th><th>A falla</th><th>Al eje</th></tr>` +
+    ? `<div class="alerta azul">Sin centros poblados rurales a menos de 3 km del punto de falla.</div>`
+    : `<div class="etq">Próximos al punto de falla (hasta 3 km)</div><table class="tabla"><tr><th>Centro poblado</th><th>Distrito</th><th class="num">A la falla</th><th class="num">Al eje</th></tr>` +
       cerca.map((x) => `<tr><td>${esc(x.nombre)}</td><td>${esc(x.distrito)}</td><td class="num">${(x.df / 1000).toFixed(2)} km</td><td class="num">${Math.round(x.d)} m</td></tr>`).join("") +
       `</table>`;
 }
@@ -446,7 +451,7 @@ async function cargarIncendios() {
     });
   } catch (e) {
     E.incendios = [];
-    panel.innerHTML = `<div class="alerta ambar">No se pudo consultar Bomberos: ${esc(e.message)}</div>`;
+    panel.innerHTML = `<div class="alerta ambar"><b>Sin conexión</b>No se pudo consultar la información de Bomberos (${esc(e.message)}).</div>`;
     dibujarIncendios(); return;
   }
   dibujarIncendios();
@@ -457,7 +462,7 @@ function dibujarIncendios() {
   if (!on) return;
   const conCoord = E.incendios.filter((x) => isFinite(x.lat) && isFinite(x.lon) && !(x.lat === 0 && x.lon === 0));
   mapa.getSource("incendios").setData(fc(conCoord.map((x) => punto([x.lon, x.lat], {
-    nombre: `🔥 ${x.tipo}`, info: `${x.estado} · ${x.dir} · ${x.fecha} · Máquinas: ${x.maq || "—"}`,
+    nombre: x.tipo, info: `${x.estado === "ATENDIENDO" ? "En atención" : "Cerrado"} · ${x.dir} · ${x.fecha} · Unidades: ${x.maq || "—"}`,
     atencion: x.estado === "ATENDIENDO" ? 1 : 0, color: x.estado === "ATENDIENDO" ? "#D62828" : "#FF9800",
   }))));
   const nAt = E.incendios.filter((x) => x.estado === "ATENDIENDO").length;
@@ -465,11 +470,16 @@ function dibujarIncendios() {
   const c = circ();
   const cerca = conCoord.filter((x) => x.estado === "ATENDIENDO")
     .map((x) => ({ ...x, d: distAPolilinea(x.lon, x.lat, c.pts).d })).filter((x) => x.d < 500).sort((a, b) => a.d - b.d);
-  let html = `<div class="nota">🔴 ${nAt} en atención · 🟠 ${nCe} cerrado(s) (todo el Perú, se actualiza cada 90 s)</div>`;
+  let html = `<div><span class="estado rojo">${nAt} <span>en atención</span></span>` +
+    `<span class="estado naranja">${nCe} <span>cerrados</span></span></div>` +
+    `<div class="nota">Cobertura nacional · actualización cada 90 s</div>`;
   if (cerca.length) {
-    html += `<div class="alerta roja">⚠️ ${cerca.length} incendio(s) EN ATENCIÓN a menos de 500 m de la línea</div>`;
-    if (cerca.some((x) => x.d < 100)) html += `<div class="alerta roja">🚨 ¡ALERTA CRÍTICA! Incendio a menos de 100 m de la línea</div>`;
-    html += cerca.map((x) => `<div class="nota">${x.d < 100 ? "🚨 " : ""}<b>${esc(x.dir)}</b> — a ${Math.round(x.d)} m · ${esc(x.fecha)}</div>`).join("");
+    if (cerca.some((x) => x.d < 100)) {
+      html += `<div class="alerta roja"><b>Alerta crítica</b>Incendio en atención a menos de 100 m de la línea.</div>`;
+    }
+    html += `<div class="alerta roja"><b>Incendios cercanos</b>${cerca.length} ${cerca.length === 1 ? "incendio en atención" : "incendios en atención"} a menos de 500 m de la línea.</div>`;
+    html += `<ul class="lista-alerta">` + cerca.map((x) =>
+      `<li>${esc(x.dir)}<small>${Math.round(x.d)} m de la línea · ${esc(x.fecha)}</small></li>`).join("") + `</ul>`;
   }
   $("panelIncendios").innerHTML = html;
 }
@@ -489,7 +499,7 @@ async function cargarClimaLinea() {
       return punto([p[0], p[1]], { peso });
     })));
   } catch (e) {
-    $("panelClima").innerHTML = `<div class="alerta ambar">No se pudo consultar el clima: ${esc(e.message)}</div>`;
+    $("panelClima").innerHTML = `<div class="alerta ambar"><b>Sin conexión</b>No se pudo consultar el clima (${esc(e.message)}).</div>`;
   }
 }
 let temporizadorClima = null;
@@ -508,11 +518,15 @@ async function cargarClimaFalla() {
     const desc = DESCRIPCION_CLIMA[cod] || `Código ${cod}`, lluvia = cur.precipitation || 0;
     const ll24 = ((j.hourly || {}).precipitation || []).slice(0, 24).reduce((s, v) => s + (v || 0), 0);
     const clase = TORMENTA.has(cod) ? "roja" : lluvia > 0 ? "ambar" : "azul";
-    const txt = TORMENTA.has(cod) ? `⚡ Riesgo de descarga atmosférica en el punto de falla — ${desc}`
-      : lluvia > 0 ? `🌧️ Lluvia en el punto de falla (${lluvia.toFixed(1)} mm/h) — ${desc}` : `☀️ Sin lluvia en el punto de falla — ${desc}`;
-    $("panelClima").innerHTML = `<div class="alerta ${clase}">${txt}</div><div class="nota">Lluvia acumulada últimas 24 h: ${ll24.toFixed(1)} mm · Viento: ${(cur.wind_speed_10m ?? 0).toFixed(0)} km/h</div>`;
+    const titulo = TORMENTA.has(cod) ? "Riesgo de descarga atmosférica" : lluvia > 0 ? "Lluvia en el punto de falla" : "Sin lluvia en el punto de falla";
+    $("panelClima").innerHTML = `<div class="alerta ${clase}"><b>${titulo}</b>${esc(desc)}</div>` +
+      `<dl class="tabla-dato">${filasDato([
+        ["Lluvia actual", `${lluvia.toFixed(1)} mm/h`],
+        ["Acumulado 24 h", `${ll24.toFixed(1)} mm`],
+        ["Viento", `${(cur.wind_speed_10m ?? 0).toFixed(0)} km/h`],
+      ])}</dl>`;
   } catch (e) {
-    $("panelClima").innerHTML = `<div class="alerta ambar">No se pudo consultar el clima: ${esc(e.message)}</div>`;
+    $("panelClima").innerHTML = `<div class="alerta ambar"><b>Sin conexión</b>No se pudo consultar el clima (${esc(e.message)}).</div>`;
   }
 }
 
@@ -535,18 +549,20 @@ function actualizarLeyenda() {
   const it = (estilo, txt) => `<div class="it">${estilo}<span>${txt}</span></div>`;
   const ln = (c, dash) => `<span class="ln" style="border-color:${c};${dash ? "border-top-style:dashed;" : ""}"></span>`;
   const pt = (c) => `<span class="pt" style="background:${c}"></span>`;
-  let h = `<div class="tit">LEYENDA</div>` +
-    it(ln(COLORES_KV[220]), "Activo de Transmisión de 220 kV") + it(ln(COLORES_KV[138]), "Activo de Transmisión de 138 kV") +
-    it(ln(COLORES_KV[69]), "Activo de Transmisión de 69 kV") + it(ln(COLORES_KV[60]), "Activo de Transmisión de 60 / 50 kV") +
-    it(ln(AZUL), "Línea seleccionada") + it(ln(E.oscuro ? "#C8D0DC" : "#111", true), "Línea subterránea");
-  if ($("chkIncendios").checked) h += it(pt("#D62828"), "Incendio en atención") + it(pt("#FF9800"), "Incendio cerrado");
-  if ($("chkClima").checked) h += it(pt("#4A1486"), "Riesgo de tormenta eléctrica") + it(pt("#9E77C7"), "Lluvia");
-  if ($("chkRios").checked) h += it(ln(COLORES_HIDRO["Río"]), "Río") + it(ln(COLORES_HIDRO.Acequia), "Acequia");
+  const grupo = (t) => `<div class="grupo">${t}</div>`;
+  let h = grupo("Líneas de transmisión") +
+    it(ln(COLORES_KV[220]), "220 kV") + it(ln(COLORES_KV[138]), "138 kV") +
+    it(ln(COLORES_KV[69]), "69 kV") + it(ln(COLORES_KV[60]), "60 kV y 50 kV") +
+    it(ln(AZUL), "Línea seleccionada") + it(ln(E.oscuro ? "#C8D0DC" : "#111", true), "Tramo subterráneo");
   if ($("chkVias").checked) {
     const tipos = tiposViaActivos();
+    h += grupo("Red vial");
     for (const t of Object.keys(NOMBRES_VIAS)) if (tipos.has(t)) h += it(ln(colorVia(t), t === "Herradura"), NOMBRES_VIAS[t]);
   }
-  if ($("chkCP").checked) h += it(pt("#D32F2F"), "Centro poblado rural ≤ 100 m") + it(pt("#F57C00"), "Centro poblado rural 100–300 m") + it(pt("#FDD835"), "Centro poblado rural > 300 m");
+  if ($("chkRios").checked) h += grupo("Hidrografía") + it(ln(COLORES_HIDRO["Río"]), "Río") + it(ln(COLORES_HIDRO.Acequia), "Acequia");
+  if ($("chkCP").checked) h += grupo("Centros poblados rurales") + it(pt("#D32F2F"), "Hasta 100 m del eje") + it(pt("#F57C00"), "De 100 a 300 m") + it(pt("#FDD835"), "Más de 300 m");
+  if ($("chkIncendios").checked) h += grupo("Incendios") + it(pt("#D62828"), "En atención") + it(pt("#FF9800"), "Cerrado");
+  if ($("chkClima").checked) h += grupo("Clima") + it(pt("#4A1486"), "Tormenta eléctrica") + it(pt("#9E77C7"), "Lluvia");
   $("leyenda").innerHTML = h;
 }
 
@@ -578,7 +594,7 @@ function conectarEventos() {
     $("panelIncendios").hidden = !e.target.checked;
     clearInterval(temporizadorIncendios);
     if (e.target.checked) {
-      $("panelIncendios").innerHTML = `<div class="nota">Consultando Bomberos…</div>`;
+      $("panelIncendios").innerHTML = `<div class="nota">Consultando información de Bomberos…</div>`;
       cargarIncendios(); temporizadorIncendios = setInterval(cargarIncendios, 90000);
     } else dibujarIncendios();
     actualizarLeyenda();
@@ -610,7 +626,7 @@ async function iniciar() {
     $("cargando").innerHTML = `<div>No se pudieron cargar los datos: ${esc(e.message)}</div>`;
     return;
   }
-  $("fechaDatos").textContent = `Datos generados: ${D.generado}`;
+  $("fechaDatos").textContent = `Datos al ${D.generado}`;
   // Latido: el servidor local se cierra solo cuando el navegador deja de enviarlo
   setInterval(() => fetch("/api/latido", { method: "POST" }).catch(() => {}), 20000);
   fetch("/api/latido", { method: "POST" }).catch(() => {});
@@ -632,7 +648,7 @@ async function iniciar() {
     actualizarLeyenda();
     if (!TOKEN) {
       $("avisoMapa").hidden = false;
-      $("avisoMapa").textContent = "Sin token de Mapbox: se usan mapas de Carto (calle) y Esri (satélite).";
+      $("avisoMapa").textContent = "Mapa base alternativo: Carto (calle) y Esri (satélite). No se configuró el token de Mapbox.";
     }
     $("cargando").remove();
   });
