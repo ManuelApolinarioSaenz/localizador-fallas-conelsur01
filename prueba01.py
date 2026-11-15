@@ -24,19 +24,6 @@ GRIS_CLARO = "#F5F7FA"
 GRIS_TEXTO = "#4A4F57"
 GRIS_BORDE = "#E3E6EC"
 
-COLORES_TIPO = {
-    "Poblado": "#FF8C00",
-    "Carretera": "#696969",
-    "Rio": "#1E90FF",
-    "Cultivo": "#6B8E23",
-    "Pastizal": "#9ACD32",
-    "Eriazo": "#A0522D",
-    "Bosque": "#2E7D32",
-    "Mineria": "#222222",
-    "Parque": "#228B22",
-    "Telecom": "#8A2BE2",
-    "Otro": "#808080",
-}
 
 st.set_page_config(
     layout="wide",
@@ -528,45 +515,6 @@ def codigo_de_nombre_linea(nombre_linea):
     return int(m.group(1)) if m else None
 
 
-def codigos_en_texto(texto):
-    return set(int(n) for n in re.findall(r"\d+", str(texto)))
-
-
-def _numero_torre_texto(nombre):
-    m = re.search(r"\d+", str(nombre))
-    return m.group().lstrip("0") or "0" if m else None
-
-
-def anclar_restricciones_a_torres(df_rest_linea, df_linea):
-    """Pasa las progresivas del CSV a la distancia que usa la app.
-
-    Cada restricción del CSV empieza en su Torre_Origen (las progresivas se
-    midieron desde la primera torre, en el mismo sentido que la app). Como la
-    app ahora mide por el trazado real y desde el pórtico, se ancla cada fila
-    a la distancia de su torre en la app y se conserva el largo del tramo.
-    Si la torre no se encuentra (o el ancla discrepa > 500 m de lo esperado),
-    se usa la progresiva del CSV corregida con el desfase típico de la línea."""
-    if df_rest_linea.empty:
-        return df_rest_linea
-    dist_por_torre = {}
-    for torre, dist in zip(df_linea["Torre"], df_linea["Distancia_m"]):
-        if torre and not torre.startswith("Pórtico"):
-            dist_por_torre.setdefault(_numero_torre_texto(torre), dist)
-
-    inicio = df_rest_linea["Acumulado_Inicio_m"].astype(float)
-    largo = (df_rest_linea["Acumulado_Fin_m"].astype(float) - inicio).fillna(0).clip(lower=0)
-    anclas = df_rest_linea["Torre_Origen"].map(lambda t: dist_por_torre.get(_numero_torre_texto(t)))
-    desfases = (anclas - inicio).dropna()
-    desfase_tipico = float(desfases.median()) if not desfases.empty else 0.0
-    esperado = inicio + desfase_tipico
-    usar_ancla = anclas.notna() & ((anclas - esperado).abs() <= 500)
-    nuevo_inicio = anclas.where(usar_ancla, esperado)
-
-    df_rest_linea["Acumulado_Inicio_m"] = nuevo_inicio
-    df_rest_linea["Acumulado_Fin_m"] = nuevo_inicio + largo
-    return df_rest_linea
-
-
 def hex_a_rgb(color_hex, alpha=255):
     """Convierte '#RRGGBB' a [r, g, b, alpha] para las capas de PyDeck."""
     color_hex = color_hex.lstrip("#")
@@ -822,21 +770,53 @@ else:
 if fuente_datos == "excel":
     subestaciones = construir_subestaciones(datos_lineas)
 
+# Ríos/acequias y red vial (INEI - SIGE Atlas), vectorizados en una franja de
+# ~5 km alrededor de las líneas. Cada elemento: {"t": tipo, "n": nombre, "p": [[lon, lat], ...]}
+@st.cache_data(show_spinner=False)
+def cargar_capa_inei(ruta):
+    import json
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            elementos = json.load(f)
+    except FileNotFoundError:
+        return [], np.zeros((0, 4))
+    cajas = np.array([
+        [min(p[0] for p in e["p"]), min(p[1] for p in e["p"]), max(p[0] for p in e["p"]), max(p[1] for p in e["p"])]
+        for e in elementos
+    ]) if elementos else np.zeros((0, 4))
+    return elementos, cajas
+
+
+def elementos_en_caja(elementos, cajas, lon_min, lat_min, lon_max, lat_max, tipos=None):
+    if not elementos:
+        return []
+    dentro = (cajas[:, 2] >= lon_min) & (cajas[:, 0] <= lon_max) & (cajas[:, 3] >= lat_min) & (cajas[:, 1] <= lat_max)
+    return [elementos[i] for i in np.nonzero(dentro)[0] if tipos is None or elementos[i]["t"] in tipos]
+
+
+rios_inei, cajas_rios_inei = cargar_capa_inei("rios_acequias_inei.json")
+vias_inei, cajas_vias_inei = cargar_capa_inei("vias_inei.json")
+
+COLORES_HIDRO = {"Río": "#29B6F6", "Acequia": "#80DEEA"}
+COLORES_VIAS = {
+    "Asfaltada": "#212121",
+    "Afirmada": "#8D6E63",
+    "Carrozable": "#FFB300",
+    "Herradura": "#AB47BC",
+}
+NOMBRES_VIAS = {
+    "Asfaltada": "Carretera asfaltada",
+    "Afirmada": "Carretera afirmada",
+    "Carrozable": "Camino carrozable",
+    "Herradura": "Camino de herradura",
+}
+
 # Centros poblados rurales a <= 5 km de alguna línea (INEI - SIGE Atlas).
 # Se genera fuera de la app (ver Notas en analisis_centros_poblados_lineas.xlsx).
 try:
     df_cp_rurales = pd.read_csv("centros_poblados_rurales.csv", dtype={"ubigeo": str})
 except FileNotFoundError:
     df_cp_rurales = pd.DataFrame()
-
-# Restricciones (zonas pobladas, cruces de carretera/río, etc.)
-try:
-    df_rest = pd.read_csv("restricciones_conelsur.csv", encoding="utf-8-sig")
-    df_rest["Tipo"] = df_rest["Tipo"].astype(str).str.strip()
-    restricciones_disponibles = True
-except FileNotFoundError:
-    df_rest = pd.DataFrame()
-    restricciones_disponibles = False
 
 # =========================================================
 # 5. INTERFAZ — CONTROLES
@@ -887,16 +867,10 @@ with col_control:
     )
     distancia_falla_m = distancia_falla_km * 1000
     # Distancia equivalente contada desde el inicio de la línea (la que usan
-    # la interpolación, las torres y las restricciones).
+    # la interpolación y las torres).
     distancia_desde_inicio_m = (
         distancia_falla_m if medido_desde_inicio else longitud_linea_m - distancia_falla_m
     )
-
-    if restricciones_disponibles:
-        mostrar_restricciones = st.checkbox("Mostrar restricciones en el mapa", value=False)
-    else:
-        mostrar_restricciones = False
-        st.warning("No se encontró restricciones_conelsur.csv en el repositorio.")
 
     mostrar_subestaciones = st.checkbox("Mostrar subestaciones (patio real)", value=False)
 
@@ -1006,6 +980,34 @@ with col_control:
             )
 
     # ---------------------------------------------------
+    # Ríos y acequias / red vial (INEI) — se filtran a la zona de la línea
+    # ---------------------------------------------------
+    _margen_capas = 0.05  # ~5 km
+    _caja_linea = (
+        df_linea["Longitud"].min() - _margen_capas, df_linea["Latitud"].min() - _margen_capas,
+        df_linea["Longitud"].max() + _margen_capas, df_linea["Latitud"].max() + _margen_capas,
+    )
+    mostrar_hidro = False
+    hidro_linea = []
+    if rios_inei:
+        mostrar_hidro = st.checkbox("🌊 Mostrar ríos y acequias (INEI)", value=False)
+        if mostrar_hidro:
+            hidro_linea = elementos_en_caja(rios_inei, cajas_rios_inei, *_caja_linea)
+
+    mostrar_vias = False
+    vias_linea = []
+    if vias_inei:
+        mostrar_vias = st.checkbox("🛣️ Mostrar vías (INEI)", value=False)
+        if mostrar_vias:
+            tipos_vias_sel = st.multiselect(
+                "Tipos de vía:",
+                options=list(NOMBRES_VIAS),
+                default=list(NOMBRES_VIAS),
+                format_func=lambda t: NOMBRES_VIAS[t],
+            )
+            vias_linea = elementos_en_caja(vias_inei, cajas_vias_inei, *_caja_linea, tipos=set(tipos_vias_sel))
+
+    # ---------------------------------------------------
     # Ubicación de la falla
     # ---------------------------------------------------
     lat_falla, lon_falla = punto_en_distancia(df_linea, distancia_desde_inicio_m)
@@ -1045,6 +1047,46 @@ with col_control:
         unsafe_allow_html=True,
     )
 
+    if (mostrar_vias and vias_linea) or (mostrar_hidro and hidro_linea):
+        def _mas_cercano(elementos):
+            """(distancia_m, elemento) del tramo más cercano al punto de falla."""
+            mejor = (np.inf, None)
+            k_lon = 111_320 * np.cos(np.radians(lat_falla))
+            for e in elementos:
+                pts = np.asarray(e["p"], float)
+                x = (pts[:, 0] - lon_falla) * k_lon
+                y = (pts[:, 1] - lat_falla) * 110_574
+                ax, ay, bx, by = x[:-1], y[:-1], x[1:], y[1:]
+                vx, vy = bx - ax, by - ay
+                l2 = vx * vx + vy * vy
+                t = np.clip(np.where(l2 > 0, -(ax * vx + ay * vy) / np.where(l2 > 0, l2, 1), 0), 0, 1)
+                d = np.hypot(ax + t * vx, ay + t * vy).min() if len(ax) else np.inf
+                if d < mejor[0]:
+                    mejor = (d, e)
+            return mejor
+
+        def _fmt_dist(d):
+            return f"<b>{d / 1000:.2f} km</b>" if d >= 1000 else f"<b>{d:.0f} m</b>"
+
+        _lineas_info = []
+        if mostrar_vias and vias_linea:
+            for _tipo in NOMBRES_VIAS:
+                _d, _e = _mas_cercano([e for e in vias_linea if e["t"] == _tipo])
+                if _e is not None and _d <= 5000:
+                    _lineas_info.append(f"{NOMBRES_VIAS[_tipo]}: {_fmt_dist(_d)}")
+        if mostrar_hidro and hidro_linea:
+            for _tipo in ("Río", "Acequia"):
+                _d, _e = _mas_cercano([e for e in hidro_linea if e["t"] == _tipo])
+                if _e is not None and _d <= 5000:
+                    _nombre = f" ({_e.get('n')})" if _e.get("n") else ""
+                    _lineas_info.append(f"{_tipo}{_nombre}: {_fmt_dist(_d)}")
+        if _lineas_info:
+            st.markdown(
+                '<div class="ubicacion-card"><div class="titulo">🧭 Más cercano al punto de falla</div>'
+                f'<div class="detalle">{"<br>".join(_lineas_info)}</div></div>',
+                unsafe_allow_html=True,
+            )
+
     if mostrar_cp and not df_cp_linea.empty:
         df_cp_linea["dist_falla_m"] = distancia_m(
             df_cp_linea["lat"].to_numpy(float), df_cp_linea["lon"].to_numpy(float), lat_falla, lon_falla
@@ -1063,47 +1105,6 @@ with col_control:
                 }),
                 hide_index=True, use_container_width=True,
             )
-
-    # ---------------------------------------------------
-    # Restricciones de la línea seleccionada
-    # ---------------------------------------------------
-    df_rest_linea = pd.DataFrame()
-    if restricciones_disponibles:
-        codigo_linea_actual = codigo_de_nombre_linea(linea_seleccionada)
-        mask = df_rest["Codigo_Linea"].apply(lambda s: codigo_linea_actual in codigos_en_texto(s))
-        df_rest_linea = anclar_restricciones_a_torres(df_rest[mask].copy(), df_linea)
-
-        if not df_rest_linea.empty:
-            puntos_ini = df_rest_linea["Acumulado_Inicio_m"].apply(lambda d: punto_en_distancia(df_linea, d))
-            puntos_fin = df_rest_linea["Acumulado_Fin_m"].apply(lambda d: punto_en_distancia(df_linea, d))
-            df_rest_linea["lat_ini"] = puntos_ini.apply(lambda p: p[0])
-            df_rest_linea["lon_ini"] = puntos_ini.apply(lambda p: p[1])
-            df_rest_linea["lat_fin"] = puntos_fin.apply(lambda p: p[0])
-            df_rest_linea["lon_fin"] = puntos_fin.apply(lambda p: p[1])
-
-        # --- Chequeo automático: ¿el punto de falla cae en una restricción? ---
-        st.subheader("🔎 Verificación en el punto de falla")
-        margen_m = 25  # tolerancia de interpolación
-        en_rango = df_rest_linea[
-            (df_rest_linea["Acumulado_Inicio_m"] - margen_m <= distancia_desde_inicio_m)
-            & (df_rest_linea["Acumulado_Fin_m"] + margen_m >= distancia_desde_inicio_m)
-        ]
-
-        if en_rango.empty:
-            st.info("No se registran restricciones conocidas en este punto.")
-        else:
-            for _, r in en_rango.iterrows():
-                detalle = (
-                    f"**{r['Tipo']}** — {r['Zona_Geografica']}  \n"
-                    f"{r['Texto_Original']}  \n"
-                    f"Distancia horizontal al eje: {r['Distancia_Horizontal_m']:.0f} m · Fuente: {r['Fuente']}"
-                )
-                if r["Tipo"] == "Poblado" and r["Distancia_Horizontal_m"] < 100:
-                    st.error(f"⚠️ Zona poblada cercana\n\n{detalle}")
-                elif r["Fuente"] == "Cruce":
-                    st.warning(f"🚧 Cruce con {r['Tipo'].lower()}\n\n{detalle}")
-                else:
-                    st.warning(detalle)
 
     # ---------------------------------------------------
     # Clima en el punto de falla: detalle puntual (el checkbox ya se
@@ -1142,7 +1143,7 @@ with col_mapa:
     # ---------------------------------------------------
     n_torres = int(((df_linea["Torre"] != "") & ~df_linea["Torre"].str.startswith("Pórtico")).sum())
     longitud_km = df_linea["Distancia_m"].max() / 1000
-    n_restricciones = len(df_rest_linea) if not df_rest_linea.empty else 0
+    kv_linea = info_lineas.get(linea_seleccionada, {}).get("voltaje_kv")
 
     st.markdown(
         f"""
@@ -1156,8 +1157,8 @@ with col_mapa:
                 <div class="kpi-etiqueta">Longitud total</div>
             </div>
             <div class="kpi-card">
-                <div class="kpi-valor">{n_restricciones}</div>
-                <div class="kpi-etiqueta">Restricciones registradas</div>
+                <div class="kpi-valor">{f"{kv_linea} kV" if kv_linea else "—"}</div>
+                <div class="kpi-etiqueta">Nivel de tensión</div>
             </div>
             <div class="kpi-card">
                 <div class="kpi-valor">{distancia_falla_km:.2f} km</div>
@@ -1304,63 +1305,6 @@ with col_mapa:
     )
 
     # ---------------------------------------------------
-    # Restricciones (zonas pobladas, cruces, etc.)
-    # ---------------------------------------------------
-    if mostrar_restricciones and not df_rest_linea.empty:
-        datos_rest_tramo, datos_rest_punto = [], []
-        for _, r in df_rest_linea.iterrows():
-            color_rgb = hex_a_rgb(COLORES_TIPO.get(r["Tipo"], "#808080"), 200)
-            info = (
-                f" — {r['Zona_Geografica']}"
-                f" · {r['Texto_Original']}"
-                f" · D. horizontal: {r['Distancia_Horizontal_m']:.0f} m · Fuente: {r['Fuente']}"
-            )
-            if r["Acumulado_Inicio_m"] == r["Acumulado_Fin_m"]:
-                datos_rest_punto.append(
-                    {
-                        "position": [r["lon_ini"], r["lat_ini"]],
-                        "color": color_rgb,
-                        "nombre": r["Tipo"],
-                        "info": info,
-                    }
-                )
-            else:
-                datos_rest_tramo.append(
-                    {
-                        "path": [[r["lon_ini"], r["lat_ini"]], [r["lon_fin"], r["lat_fin"]]],
-                        "color": color_rgb,
-                        "nombre": r["Tipo"],
-                        "info": info,
-                    }
-                )
-        if datos_rest_tramo:
-            capas_pydeck.append(
-                pdk.Layer(
-                    "PathLayer",
-                    data=datos_rest_tramo,
-                    get_path="path",
-                    get_color="color",
-                    get_width=4,
-                    width_units=pdk.types.String("pixels"),
-                    joint_rounded=True,
-                    cap_rounded=True,
-                    pickable=True,
-                )
-            )
-        if datos_rest_punto:
-            capas_pydeck.append(
-                pdk.Layer(
-                    "ScatterplotLayer",
-                    data=datos_rest_punto,
-                    get_position="position",
-                    get_fill_color="color",
-                    get_radius=120,
-                    radius_min_pixels=5,
-                    pickable=True,
-                )
-            )
-
-    # ---------------------------------------------------
     # Subestaciones: su polígono real (patio) + nombre siempre visible.
     # Ya no se dibuja un cuadrado sintético — el KMZ trae el contorno real.
     # ---------------------------------------------------
@@ -1486,6 +1430,57 @@ with col_mapa:
                     pickable=True,
                 )
             )
+
+    # ---------------------------------------------------
+    # Ríos y acequias / vías (INEI)
+    # ---------------------------------------------------
+    if mostrar_hidro and hidro_linea:
+        capas_pydeck.append(
+            pdk.Layer(
+                "PathLayer",
+                data=[
+                    {
+                        "path": e["p"],
+                        "nombre": e.get("n") or e["t"],
+                        "info": f" — {e['t']} · INEI",
+                        "color": hex_a_rgb(COLORES_HIDRO[e["t"]], 230),
+                        "ancho": 3 if e["t"] == "Río" else 2,
+                    }
+                    for e in hidro_linea
+                ],
+                get_path="path",
+                get_color="color",
+                get_width="ancho",
+                width_units=pdk.types.String("pixels"),
+                pickable=True,
+            )
+        )
+    if mostrar_vias and vias_linea:
+        _datos_vias = []
+        for e in vias_linea:
+            tramos = [e["p"]]
+            if e["t"] == "Herradura" and len(e["p"]) > 2:
+                # trazo discontinuo para el camino de herradura
+                tramos = [e["p"][i:i + 2] for i in range(0, len(e["p"]) - 1, 2)]
+            for tramo in tramos:
+                _datos_vias.append({
+                    "path": tramo,
+                    "nombre": NOMBRES_VIAS[e["t"]],
+                    "info": " — INEI",
+                    "color": hex_a_rgb(COLORES_VIAS[e["t"]], 235),
+                    "ancho": {"Asfaltada": 4, "Afirmada": 3}.get(e["t"], 2),
+                })
+        capas_pydeck.append(
+            pdk.Layer(
+                "PathLayer",
+                data=_datos_vias,
+                get_path="path",
+                get_color="color",
+                get_width="ancho",
+                width_units=pdk.types.String("pixels"),
+                pickable=True,
+            )
+        )
 
     # ---------------------------------------------------
     # Centros poblados rurales cercanos (color según distancia al eje)
@@ -1677,6 +1672,20 @@ with col_mapa:
             '<span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#FF9800;"></span>Incendio Cerrado</span>'
         )
 
+    seccion_leyenda_hidro = ""
+    if mostrar_hidro and hidro_linea:
+        seccion_leyenda_hidro = "".join(
+            f'<span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_HIDRO[t]};"></span>{t}</span>'
+            for t in ("Río", "Acequia")
+        )
+    seccion_leyenda_vias = ""
+    if mostrar_vias and vias_linea:
+        seccion_leyenda_vias = "".join(
+            f'<span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:{COLORES_VIAS[t]};'
+            f'{" border-top-style:dashed;" if t == "Herradura" else ""}"></span>{NOMBRES_VIAS[t]}</span>'
+            for t in NOMBRES_VIAS if any(e["t"] == t for e in vias_linea)
+        )
+
     seccion_leyenda_cp = ""
     if mostrar_cp and not df_cp_linea.empty:
         seccion_leyenda_cp = (
@@ -1707,6 +1716,8 @@ with col_mapa:
         '<span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:#111111; border-top-style:dashed;"></span>Línea Subterránea</span>'
         f'{seccion_leyenda_incendios}'
         f'{seccion_leyenda_clima}'
+        f'{seccion_leyenda_hidro}'
+        f'{seccion_leyenda_vias}'
         f'{seccion_leyenda_cp}'
         '</div>'
     )
@@ -1715,21 +1726,6 @@ with col_mapa:
     st.pydeck_chart(mapa_deck, use_container_width=True, height=580)
     st.markdown(leyenda_html, unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
-
-    if mostrar_restricciones and not df_rest_linea.empty:
-        tipos_presentes = sorted(df_rest_linea["Tipo"].unique())
-        leyenda_items = "".join(
-            f'<span class="leyenda-item"><span class="leyenda-swatch" '
-            f'style="background-color:{COLORES_TIPO.get(t, "#808080")}"></span>{t}</span>'
-            for t in tipos_presentes
-        )
-        st.markdown(
-            f'<div class="leyenda-card">'
-            f'<div class="leyenda-titulo">Leyenda de restricciones</div>'
-            f'{leyenda_items}'
-            f'</div>',
-            unsafe_allow_html=True,
-        )
 
 st.markdown(
     '<div class="conelsur-footer">CONELSUR — Centro de Control de Operaciones de Transmisión · '
