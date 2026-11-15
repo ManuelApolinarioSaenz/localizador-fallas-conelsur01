@@ -9,7 +9,7 @@ import numpy as np
 import requests
 
 from cargar_kmz import cargar_lineas_y_subestaciones_kmz, COLORES_POR_VOLTAJE
-from circuitos import construir_circuitos
+from circuitos import construir_circuitos, distancia_puntos_a_linea
 
 # =========================================================
 # 0. COLORES DE MARCA CONELSUR
@@ -822,6 +822,13 @@ else:
 if fuente_datos == "excel":
     subestaciones = construir_subestaciones(datos_lineas)
 
+# Centros poblados rurales a <= 5 km de alguna línea (INEI - SIGE Atlas).
+# Se genera fuera de la app (ver Notas en analisis_centros_poblados_lineas.xlsx).
+try:
+    df_cp_rurales = pd.read_csv("centros_poblados_rurales.csv", dtype={"ubigeo": str})
+except FileNotFoundError:
+    df_cp_rurales = pd.DataFrame()
+
 # Restricciones (zonas pobladas, cruces de carretera/río, etc.)
 try:
     df_rest = pd.read_csv("restricciones_conelsur.csv", encoding="utf-8-sig")
@@ -968,6 +975,37 @@ with col_control:
             st.warning(f"No se pudo consultar el clima a lo largo de la línea: {e}")
 
     # ---------------------------------------------------
+    # Centros poblados rurales cercanos a la línea seleccionada (INEI)
+    # ---------------------------------------------------
+    df_cp_linea = pd.DataFrame()
+    mostrar_cp = False
+    if not df_cp_rurales.empty:
+        mostrar_cp = st.checkbox("🏘️ Mostrar centros poblados rurales cercanos (INEI)", value=False)
+        if mostrar_cp:
+            radio_cp_m = st.select_slider(
+                "Distancia máxima a la línea:",
+                options=[100, 300, 500, 1000, 2000, 5000],
+                value=1000,
+                format_func=lambda m: f"{m} m" if m < 1000 else f"{m // 1000} km",
+            )
+            # Prefiltro por recuadro de la línea + margen, para no medir todo el país
+            _margen = radio_cp_m / 100_000 + 0.01
+            _caja = df_cp_rurales[
+                df_cp_rurales["lat"].between(df_linea["Latitud"].min() - _margen, df_linea["Latitud"].max() + _margen)
+                & df_cp_rurales["lon"].between(df_linea["Longitud"].min() - _margen, df_linea["Longitud"].max() + _margen)
+            ].copy()
+            if not _caja.empty:
+                _dist, _prog = distancia_puntos_a_linea(_caja["lat"], _caja["lon"], df_linea)
+                _caja["dist_linea_m"] = _dist
+                _caja["progresiva_m"] = _prog
+                df_cp_linea = _caja[_caja["dist_linea_m"] <= radio_cp_m].sort_values("dist_linea_m")
+            st.caption(
+                f"{len(df_cp_linea)} centro(s) poblado(s) rural(es) a ≤ "
+                f"{radio_cp_m if radio_cp_m < 1000 else radio_cp_m // 1000} {'m' if radio_cp_m < 1000 else 'km'} "
+                "de esta línea · Fuente: INEI (SIGE Atlas)"
+            )
+
+    # ---------------------------------------------------
     # Ubicación de la falla
     # ---------------------------------------------------
     lat_falla, lon_falla = punto_en_distancia(df_linea, distancia_desde_inicio_m)
@@ -1006,6 +1044,25 @@ with col_control:
         f'</div>',
         unsafe_allow_html=True,
     )
+
+    if mostrar_cp and not df_cp_linea.empty:
+        df_cp_linea["dist_falla_m"] = distancia_m(
+            df_cp_linea["lat"].to_numpy(float), df_cp_linea["lon"].to_numpy(float), lat_falla, lon_falla
+        )
+        _cerca_falla = df_cp_linea[df_cp_linea["dist_falla_m"] <= 3000].sort_values("dist_falla_m")
+        st.subheader("🏘️ Centros poblados cerca de la falla")
+        if _cerca_falla.empty:
+            st.info("Ningún centro poblado rural a menos de 3 km del punto de falla.")
+        else:
+            st.dataframe(
+                pd.DataFrame({
+                    "Centro poblado": _cerca_falla["centro_poblado"],
+                    "Distrito": _cerca_falla["distrito"],
+                    "A la falla (km)": (_cerca_falla["dist_falla_m"] / 1000).round(2),
+                    "Al eje (m)": _cerca_falla["dist_linea_m"].round(0).astype(int),
+                }),
+                hide_index=True, use_container_width=True,
+            )
 
     # ---------------------------------------------------
     # Restricciones de la línea seleccionada
@@ -1431,6 +1488,44 @@ with col_mapa:
             )
 
     # ---------------------------------------------------
+    # Centros poblados rurales cercanos (color según distancia al eje)
+    # ---------------------------------------------------
+    if mostrar_cp and not df_cp_linea.empty:
+        def _color_cp(d):
+            if d <= 100:
+                return [211, 47, 47, 240]     # rojo: prácticamente sobre la línea
+            if d <= 300:
+                return [245, 124, 0, 235]     # naranja
+            return [253, 216, 53, 230]        # amarillo
+        datos_cp = [
+            {
+                "position": [r["lon"], r["lat"]],
+                "nombre": f"CP {r['centro_poblado']}",
+                "info": (
+                    f" — {r['distrito']}, {r['provincia']} · a {r['dist_linea_m']:.0f} m del eje · Km "
+                    f"{(r['progresiva_m'] if medido_desde_inicio else longitud_linea_m - r['progresiva_m']) / 1000:.2f}"
+                    f" desde {extremo_medicion}"
+                ),
+                "color": _color_cp(r["dist_linea_m"]),
+            }
+            for _, r in df_cp_linea.iterrows()
+        ]
+        capas_pydeck.append(
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=datos_cp,
+                get_position="position",
+                get_fill_color="color",
+                get_line_color=[40, 40, 40, 230],
+                line_width_min_pixels=1,
+                stroked=True,
+                get_radius=6,
+                radius_units=pdk.types.String("pixels"),
+                pickable=True,
+            )
+        )
+
+    # ---------------------------------------------------
     # Marcador de la falla estimada
     # ---------------------------------------------------
     # Símbolo de rayo con tamaño fijo en PÍXELES: antes era un círculo de
@@ -1582,6 +1677,14 @@ with col_mapa:
             '<span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#FF9800;"></span>Incendio Cerrado</span>'
         )
 
+    seccion_leyenda_cp = ""
+    if mostrar_cp and not df_cp_linea.empty:
+        seccion_leyenda_cp = (
+            '<span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#D32F2F;"></span>Centro poblado rural ≤ 100 m</span>'
+            '<span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#F57C00;"></span>Centro poblado rural 100–300 m</span>'
+            '<span class="leyenda-item"><span class="leyenda-punto-swatch" style="background-color:#FDD835;"></span>Centro poblado rural &gt; 300 m</span>'
+        )
+
     seccion_leyenda_clima = ""
     if mostrar_clima:
         seccion_leyenda_clima = (
@@ -1604,6 +1707,7 @@ with col_mapa:
         '<span class="leyenda-item"><span class="leyenda-linea-swatch" style="border-color:#111111; border-top-style:dashed;"></span>Línea Subterránea</span>'
         f'{seccion_leyenda_incendios}'
         f'{seccion_leyenda_clima}'
+        f'{seccion_leyenda_cp}'
         '</div>'
     )
 

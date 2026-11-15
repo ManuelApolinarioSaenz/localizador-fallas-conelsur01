@@ -320,3 +320,30 @@ def construir_circuitos(df_torres, info_lineas, trazados_lineas, subestaciones):
         extremos[nombre] = (se_ini[0] if se_ini else None, se_fin[0] if se_fin else None)
 
     return datos_lineas, partes, extremos, info_circuitos
+
+
+def distancia_puntos_a_linea(lats, lons, df_linea):
+    """Distancia mínima (m) de cada punto al recorrido de la línea y su
+    progresiva (m, desde el inicio de la línea) en el punto más cercano.
+    Aproximación plana local: suficiente para distancias de pocos km."""
+    lats = np.asarray(lats, float)
+    lons = np.asarray(lons, float)
+    la = df_linea["Latitud"].to_numpy(float)
+    lo = df_linea["Longitud"].to_numpy(float)
+    prog = df_linea["Distancia_m"].to_numpy(float)
+    if len(lats) == 0 or len(la) < 2:
+        return np.full(len(lats), np.nan), np.full(len(lats), np.nan)
+    k_lon = 111_320 * np.cos(np.radians(lats))[:, None]   # (N, 1)
+    k_lat = 110_574
+    ax = (lo[None, :-1] - lons[:, None]) * k_lon
+    ay = (la[None, :-1] - lats[:, None]) * k_lat
+    bx = (lo[None, 1:] - lons[:, None]) * k_lon
+    by = (la[None, 1:] - lats[:, None]) * k_lat
+    vx, vy = bx - ax, by - ay
+    l2 = vx * vx + vy * vy
+    t = np.clip(np.where(l2 > 0, -(ax * vx + ay * vy) / np.where(l2 > 0, l2, 1), 0), 0, 1)
+    dist = np.hypot(ax + t * vx, ay + t * vy)           # (N, segmentos)
+    j = dist.argmin(axis=1)
+    filas = np.arange(len(lats))
+    progresiva = prog[j] + t[filas, j] * (prog[j + 1] - prog[j])
+    return dist[filas, j], progresiva
